@@ -265,6 +265,7 @@ class SerenaMCPFactory:
         serena_config: SerenaConfig,
         modes: ModeSelectionDefinition | None = None,
         additional_memory_folders: list[str] | None = None,
+        memory_path: str | None = None,
     ) -> SerenaAgent:
         return SerenaAgent(
             project=self.project,
@@ -273,6 +274,7 @@ class SerenaMCPFactory:
             modes=modes,
             memory_log_handler=self.memory_log_handler,
             additional_memory_folders=additional_memory_folders,
+            memory_path=memory_path,
         )
 
     def _create_default_serena_config(self) -> SerenaConfig:
@@ -291,6 +293,7 @@ class SerenaMCPFactory:
         trace_lsp_communication: bool | None = None,
         tool_timeout: float | None = None,
         additional_memory_folders: list[str] | None = None,
+        memory_path: str | None = None,
     ) -> FastMCP:
         """
         Create an MCP server with process-isolated SerenaAgent to prevent asyncio contamination.
@@ -332,7 +335,7 @@ class SerenaMCPFactory:
             mode_selection_def: ModeSelectionDefinition | None = None
             if modes:
                 mode_selection_def = ModeSelectionDefinition(default_modes=modes)
-            self.agent = self._create_serena_agent(config, mode_selection_def, additional_memory_folders)
+            self.agent = self._create_serena_agent(config, mode_selection_def, additional_memory_folders, memory_path)
 
         except Exception as e:
             show_fatal_exception_safe(e)

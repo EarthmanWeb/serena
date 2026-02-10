@@ -111,6 +111,13 @@ class MemoriesManager:
         memory_file_path.unlink()
         return f"Memory {name} deleted."
 
+    def set_memory_path(self, memory_path: str | None) -> None:
+        if memory_path is not None:
+            path = Path(memory_path) if Path(memory_path).is_absolute() else (self._project_root / memory_path).resolve()
+            self._memory_dir = path
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"Using custom memory path: {self._memory_dir}")
+
     def set_additional_folders(self, folders: list[str] | None) -> None:
         self._additional_folders = self._resolve_additional_folders(folders or [])
 
@@ -182,6 +189,9 @@ class Project(ToStringMixin):
 
     def set_additional_memory_folders(self, folders: list[str] | None) -> None:
         self.memories_manager.set_additional_folders(folders)
+
+    def set_memory_path(self, memory_path: str | None) -> None:
+        self.memories_manager.set_memory_path(memory_path)
 
     @classmethod
     def load(cls, project_root: str | Path, autogenerate: bool = True) -> "Project":

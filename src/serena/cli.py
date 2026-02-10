@@ -55,14 +55,15 @@ Overriding them means that they no longer apply, so you will need to
 re-specify them in addition to further modes if you want to keep them."""
 
 
-def find_project_root(root: str | Path | None = None) -> str | None:
+def find_project_root(root: str | Path | None = None) -> str:
     """Find project root by walking up from CWD.
 
     Checks for .serena/project.yml first (explicit Serena project), then .git (git root).
+    Falls back to CWD if no marker is found.
 
     :param root: If provided, constrains the search to this directory and below
                  (acts as a virtual filesystem root). Search stops at this boundary.
-    :return: absolute path to project root or None if not suitable root is found
+    :return: absolute path to project root (falls back to CWD if no marker found)
     """
     current = Path.cwd().resolve()
     boundary = Path(root).resolve() if root is not None else None
@@ -85,7 +86,8 @@ def find_project_root(root: str | Path | None = None) -> str | None:
         if (directory / ".git").exists():  # .git can be file (worktree) or dir
             return str(directory)
 
-    return None
+    # Fall back to CWD
+    return str(current)
 
 
 # --------------------- Utilities -------------------------------------
@@ -232,6 +234,13 @@ class TopLevelCommands(AutoRegisteringGroup):
         "Example: '../shared/.serena/memories,/team/common-memories'",
     )
     @click.option(
+        "--memory-path",
+        type=str,
+        default=None,
+        help="Override the base memory directory path (absolute or relative to project root). "
+        "Defaults to '<project_root>/.serena/memories'.",
+    )
+    @click.option(
         "--project-from-cwd",
         is_flag=True,
         default=False,
@@ -254,6 +263,7 @@ class TopLevelCommands(AutoRegisteringGroup):
         trace_lsp_communication: bool | None,
         tool_timeout: float | None,
         additional_folders: str | None,
+        memory_path: str | None,
     ) -> None:
         # initialize logging, using INFO level initially (will later be adjusted by SerenaAgent according to the config)
         #   * memory log handler (for use by GUI/Dashboard)
@@ -280,10 +290,7 @@ class TopLevelCommands(AutoRegisteringGroup):
             if project is not None or project_file_arg is not None:
                 raise click.UsageError("--project-from-cwd cannot be used with --project or positional project argument")
             project = find_project_root()
-            if project is not None:
-                log.info("Auto-detected project root: %s", project)
-            else:
-                log.warning("No project root found from %s; not activating any project", os.getcwd())
+            log.info("Auto-detected project root: %s", project)
 
         project_file = project_file_arg or project
         additional_folders_list = [f.strip() for f in additional_folders.split(",") if f.strip()] if additional_folders else None
@@ -300,6 +307,7 @@ class TopLevelCommands(AutoRegisteringGroup):
             trace_lsp_communication=trace_lsp_communication,
             tool_timeout=tool_timeout,
             additional_memory_folders=additional_folders_list,
+            memory_path=memory_path,
         )
         if project_file_arg:
             log.warning(
