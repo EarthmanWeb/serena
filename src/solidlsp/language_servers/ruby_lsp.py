@@ -42,7 +42,11 @@ class RubyLsp(SolidLanguageServer):
         ruby_lsp_gemfile = os.path.join(repository_root_path, ".ruby-lsp", "Gemfile")
         launch_env = {"BUNDLE_GEMFILE": ruby_lsp_gemfile}
         super().__init__(
-            config, repository_root_path, ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path, env=launch_env), "ruby", solidlsp_settings
+            config,
+            repository_root_path,
+            ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path, env=launch_env),
+            "ruby",
+            solidlsp_settings,
         )
         self.analysis_complete = threading.Event()
         self.service_ready_event = threading.Event()
