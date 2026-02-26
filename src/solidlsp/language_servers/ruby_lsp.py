@@ -428,7 +428,9 @@ class RubyLsp(SolidLanguageServer):
         gemfile_path = os.path.join(ruby_lsp_dir, "Gemfile")
         if not os.path.exists(gemfile_path):
             with open(gemfile_path, "w") as f:
-                f.write('source "https://rubygems.org"\ngem "ruby-lsp"\n')
+                # Pin rbs < 3.9 to avoid incompatibility with Ruby < 3.4.
+                # rbs >= 3.9 uses bare Pathname() which is only available in Ruby 3.4+.
+                f.write('source "https://rubygems.org"\ngem "ruby-lsp"\ngem "rbs", "< 3.9"\n')
             log.info(f"Created minimal Gemfile at {gemfile_path}")
         # Create composed marker so ruby-lsp skips its own bundle setup
         composed_marker = os.path.join(ruby_lsp_dir, "bundle_is_composed")
