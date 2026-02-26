@@ -411,7 +411,7 @@ class RubyLsp(SolidLanguageServer):
         # libmysqlclient). The marker tells ruby-lsp the bundle is already composed,
         # so it skips the install step. Symbol extraction still works without the
         # composed bundle — it only affects dependency-aware features.
-        ruby_lsp_dir = os.path.join(self.root_path, ".ruby-lsp")
+        ruby_lsp_dir = os.path.join(self.repository_root_path, ".ruby-lsp")
         composed_marker = os.path.join(ruby_lsp_dir, "bundle_is_composed")
         if not os.path.exists(composed_marker):
             os.makedirs(ruby_lsp_dir, exist_ok=True)
