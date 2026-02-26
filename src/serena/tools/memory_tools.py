@@ -100,6 +100,8 @@ class EditMemoryTool(Tool, ToolMarkerCanEdit):
         memory_path = self.memories_manager._find_memory(memory_name)
         if memory_path is None:
             return f"Memory file {memory_name} not found."
+        if self.memories_manager._is_readonly(memory_path):
+            return f"Cannot edit memory '{memory_name}': it is in a read-only path. Do not retry this operation."
         content = memory_path.read_text(encoding="utf-8")
         if mode == "literal":
             if needle not in content:
