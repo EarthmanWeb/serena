@@ -9,7 +9,13 @@ import pathlib
 
 from overrides import override
 
-from solidlsp.ls import DocumentSymbols, LSPFileBuffer, LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import (
+    DocumentSymbols,
+    LanguageServerDependencyProvider,
+    LanguageServerDependencyProviderSinglePath,
+    LSPFileBuffer,
+    SolidLanguageServer,
+)
 from solidlsp.ls_config import LanguageServerConfig
 from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
