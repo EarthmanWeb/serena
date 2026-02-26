@@ -39,10 +39,14 @@ class RubyLsp(SolidLanguageServer):
         # Gemfile at Ruby startup. Without this, bundler/setup.rb tries to
         # materialize ALL project gems (e.g. mysql2) before ruby-lsp even starts,
         # failing if any gem has unmet native dependencies.
-        ruby_lsp_gemfile = os.path.join(repository_root_path, ".ruby-lsp", "Gemfile")
+        ruby_lsp_gemfile = os.path.join(repository_root_path, ".serena", ".ruby-lsp", "Gemfile")
         launch_env = {"BUNDLE_GEMFILE": ruby_lsp_gemfile}
         super().__init__(
-            config, repository_root_path, ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path, env=launch_env), "ruby", solidlsp_settings
+            config,
+            repository_root_path,
+            ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path, env=launch_env),
+            "ruby",
+            solidlsp_settings,
         )
         self.analysis_complete = threading.Event()
         self.service_ready_event = threading.Event()
@@ -416,7 +420,7 @@ class RubyLsp(SolidLanguageServer):
         # project's gems at Ruby startup (via bundler/setup.rb), failing if
         # any gem has unmet native dependencies (e.g. mysql2).
         # The BUNDLE_GEMFILE env var (set in __init__) points here.
-        ruby_lsp_dir = os.path.join(self.repository_root_path, ".ruby-lsp")
+        ruby_lsp_dir = os.path.join(self.repository_root_path, ".serena", ".ruby-lsp")
         os.makedirs(ruby_lsp_dir, exist_ok=True)
         # Remove stale files from previous failed composed bundle attempts
         for stale_file in ("Gemfile.lock", "main_lockfile_hash"):
