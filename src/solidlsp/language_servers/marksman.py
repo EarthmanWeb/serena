@@ -9,8 +9,9 @@ import pathlib
 
 from overrides import override
 
-from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
+from solidlsp.ls import DocumentSymbols, LSPFileBuffer, LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
+from solidlsp.ls_types import SymbolKind, UnifiedSymbolInformation
 from solidlsp.lsp_protocol_handler.lsp_types import InitializeParams
 from solidlsp.settings import SolidLSPSettings
 
@@ -105,6 +106,29 @@ class Marksman(SolidLanguageServer):
     @override
     def is_ignored_dirname(self, dirname: str) -> bool:
         return super().is_ignored_dirname(dirname) or dirname in ["node_modules", ".obsidian", ".vitepress", ".vuepress"]
+
+    @override
+    def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None = None) -> DocumentSymbols:
+        """Override to remap Marksman's heading symbol kinds from String to Namespace.
+
+        Marksman LSP returns all markdown headings (h1-h6) with SymbolKind.String (15).
+        This is problematic because String (15) >= Variable (13), so headings are
+        classified as "low-level" and filtered out of symbol overviews.
+        Remapping to Namespace (3) fixes this and is semantically appropriate
+        (headings are named sections containing other content).
+        """
+        document_symbols = super().request_document_symbols(relative_file_path, file_buffer=file_buffer)
+
+        def remap_heading_kinds(symbol: UnifiedSymbolInformation) -> None:
+            if symbol["kind"] == SymbolKind.String:
+                symbol["kind"] = SymbolKind.Namespace
+            for child in symbol.get("children", []):
+                remap_heading_kinds(child)
+
+        for sym in document_symbols.root_symbols:
+            remap_heading_kinds(sym)
+
+        return document_symbols
 
     @staticmethod
     def _get_initialize_params(repository_absolute_path: str) -> InitializeParams:
