@@ -30,9 +30,47 @@ log = logging.getLogger(__name__)
 
 class MemoriesManager:
     def __init__(self, project_root: str):
+        self._project_root = Path(project_root)
         self._memory_dir = Path(get_serena_managed_in_project_dir(project_root)) / "memories"
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         self._encoding = SERENA_FILE_ENCODING
+        self._extra_memory_dirs: list[Path] = []
+
+    def _resolve_path(self, raw: str) -> Path:
+        p = Path(raw)
+        return p if p.is_absolute() else (self._project_root / p).resolve()
+
+    def _find_memory(self, name: str) -> Path | None:
+        """Search primary and extra memory dirs for a memory file."""
+        name = name.replace(".md", "")
+        parts = name.split("/")
+        filename = f"{parts[-1]}.md"
+        subdir = "/".join(parts[:-1]) if len(parts) > 1 else ""
+        for base in [self._memory_dir, *self._extra_memory_dirs]:
+            candidate = base / subdir / filename if subdir else base / filename
+            if candidate.exists():
+                return candidate
+        return None
+
+    def set_memory_paths(self, paths: list[str]) -> None:
+        """Override memory directories.
+
+        The first path becomes the primary write location; subsequent paths are
+        read-only extra sources searched when a memory is not found in the primary.
+        """
+        if not paths:
+            return
+        primary = self._resolve_path(paths[0])
+        primary.mkdir(parents=True, exist_ok=True)
+        self._memory_dir = primary
+        self._extra_memory_dirs = []
+        for raw in paths[1:]:
+            extra = self._resolve_path(raw)
+            if extra.exists() and extra.is_dir():
+                self._extra_memory_dirs.append(extra)
+            else:
+                log.warning(f"Extra memory path not found or not a directory: {extra}")
+        log.info(f"Memory paths set: primary={self._memory_dir}, extras={self._extra_memory_dirs}")
 
     def get_memory_file_path(self, name: str) -> Path:
         # Strip .md extension if present
@@ -51,8 +89,8 @@ class MemoriesManager:
         return self._memory_dir / filename
 
     def load_memory(self, name: str) -> str:
-        memory_file_path = self.get_memory_file_path(name)
-        if not memory_file_path.exists():
+        memory_file_path = self._find_memory(name)
+        if memory_file_path is None:
             return f"Memory file {name} not found, consider creating it with the `write_memory` tool if you need it."
         with open(memory_file_path, encoding=self._encoding) as f:
             return f.read()
@@ -65,31 +103,27 @@ class MemoriesManager:
 
     def list_memories(self, topic: str = "") -> list[str]:
         """
-        List memories, optionally filtered by topic.
+        List memories, optionally filtered by topic. Includes memories from extra paths.
         """
-        memories = []
+        seen: set[str] = set()
+        memories: list[str] = []
 
-        if topic:
-            # Only list memories in specified subdirectory
-            search_dir = self._memory_dir / topic.replace("/", os.sep)
+        for base in [self._memory_dir, *self._extra_memory_dirs]:
+            search_dir = base / topic.replace("/", os.sep) if topic else base
             if not search_dir.exists():
-                return []
-        else:
-            search_dir = self._memory_dir
+                continue
+            for md_file in search_dir.rglob("*.md"):
+                rel_path = md_file.relative_to(base)
+                name = str(rel_path.with_suffix("")).replace(os.sep, "/")
+                if name not in seen:
+                    seen.add(name)
+                    memories.append(name)
 
-        # Recursively find all .md files
-        for md_file in search_dir.rglob("*.md"):
-            # Calculate relative path as memory name
-            rel_path = md_file.relative_to(self._memory_dir)
-            name = str(rel_path.with_suffix("")).replace(os.sep, "/")
-            memories.append(name)
-
-        # Sort alphabetically by name
         return sorted(memories)
 
     def delete_memory(self, name: str) -> str:
-        memory_file_path = self.get_memory_file_path(name)
-        if not memory_file_path.exists():
+        memory_file_path = self._find_memory(name)
+        if memory_file_path is None:
             return f"Memory {name} not found."
         memory_file_path.unlink()
         return f"Memory {name} deleted."
@@ -184,6 +218,10 @@ class Project(ToStringMixin):
     @property
     def project_name(self) -> str:
         return self.project_config.project_name
+
+    def set_memory_paths(self, paths: list[str] | None) -> None:
+        if paths:
+            self.memories_manager.set_memory_paths(paths)
 
     @classmethod
     def load(
