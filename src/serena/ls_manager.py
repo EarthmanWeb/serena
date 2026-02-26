@@ -111,12 +111,16 @@ class LanguageServerManager:
         for thread in threads:
             thread.join()
 
-        # If any server failed to start up, raise an exception and stop all started language servers
+        # Log failures but continue with whatever servers started successfully
         if exceptions:
-            for ls in language_servers.values():
-                ls.stop()
             failure_messages = "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()])
-            raise Exception(f"Failed to start language servers:\n{failure_messages}")
+            log.warning(f"Some language servers failed to start (continuing with available ones):\n{failure_messages}")
+
+        if not language_servers:
+            raise Exception(
+                f"All language servers failed to start:\n"
+                + "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()])
+            )
 
         return LanguageServerManager(language_servers, factory)
 
