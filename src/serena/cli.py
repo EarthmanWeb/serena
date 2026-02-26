@@ -230,7 +230,8 @@ class TopLevelCommands(AutoRegisteringGroup):
         type=str,
         default=None,
         help="Comma-separated list of memory directory paths (absolute or relative to project root). "
-        "The first path is the primary write location; subsequent paths are read-only sources. "
+        "The first path is the primary write location; subsequent paths are additional sources. "
+        "Writes to existing memories update them in-place; new memories go to the primary. "
         "Defaults to '<project_root>/.serena/memories'.",
     )
     @click.option(

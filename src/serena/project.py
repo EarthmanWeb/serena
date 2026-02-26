@@ -56,7 +56,8 @@ class MemoriesManager:
         """Override memory directories.
 
         The first path becomes the primary write location; subsequent paths are
-        read-only extra sources searched when a memory is not found in the primary.
+        additional sources that are also searched. Writes to existing memories
+        update them in-place; new memories are created in the primary directory.
         """
         if not paths:
             return
@@ -73,15 +74,18 @@ class MemoriesManager:
         log.info(f"Memory paths set: primary={self._memory_dir}, extras={self._extra_memory_dirs}")
 
     def get_memory_file_path(self, name: str) -> Path:
-        # Strip .md extension if present
-        name = name.replace(".md", "")
+        # If the memory already exists (in primary or extras), return that path
+        # so that writes update in-place rather than duplicating to primary.
+        existing = self._find_memory(name)
+        if existing is not None:
+            return existing
 
-        # Split by "/" to handle subdirectories
+        # New memory: create in primary directory
+        name = name.replace(".md", "")
         parts = name.split("/")
         filename = f"{parts[-1]}.md"
 
         if len(parts) > 1:
-            # Create subdirectory path
             subdir = self._memory_dir / "/".join(parts[:-1])
             subdir.mkdir(parents=True, exist_ok=True)
             return subdir / filename
