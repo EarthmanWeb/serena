@@ -404,6 +404,21 @@ class RubyLsp(SolidLanguageServer):
         self.server.on_request("window/workDoneProgress/create", window_work_done_progress_create)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
 
+        # Pre-create the composed bundle marker to prevent ruby-lsp from running
+        # "bundle install" for the project's full Gemfile. Without this, ruby-lsp
+        # creates a composed bundle that includes ALL project gems, which fails if
+        # any gem has unmet native extension dependencies (e.g. mysql2 without
+        # libmysqlclient). The marker tells ruby-lsp the bundle is already composed,
+        # so it skips the install step. Symbol extraction still works without the
+        # composed bundle — it only affects dependency-aware features.
+        ruby_lsp_dir = os.path.join(self.root_path, ".ruby-lsp")
+        composed_marker = os.path.join(ruby_lsp_dir, "bundle_is_composed")
+        if not os.path.exists(composed_marker):
+            os.makedirs(ruby_lsp_dir, exist_ok=True)
+            with open(composed_marker, "w") as f:
+                f.write("")
+            log.info(f"Created composed bundle marker at {composed_marker} to skip bundle install")
+
         log.info("Starting ruby-lsp server process")
         self.server.start()
         initialize_params = self._get_initialize_params()
