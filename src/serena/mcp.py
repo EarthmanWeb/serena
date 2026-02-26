@@ -260,9 +260,19 @@ class SerenaMCPFactory:
                 mcp._tool_manager._tools[tool.get_name()] = mcp_tool
             log.info(f"Starting MCP server with {len(mcp._tool_manager._tools)} tools: {list(mcp._tool_manager._tools.keys())}")
 
-    def _create_serena_agent(self, serena_config: SerenaConfig, modes: ModeSelectionDefinition | None = None) -> SerenaAgent:
+    def _create_serena_agent(
+        self,
+        serena_config: SerenaConfig,
+        modes: ModeSelectionDefinition | None = None,
+        memory_paths: list[str] | None = None,
+    ) -> SerenaAgent:
         return SerenaAgent(
-            project=self.project, serena_config=serena_config, context=self.context, modes=modes, memory_log_handler=self.memory_log_handler
+            project=self.project,
+            serena_config=serena_config,
+            context=self.context,
+            modes=modes,
+            memory_log_handler=self.memory_log_handler,
+            memory_paths=memory_paths,
         )
 
     def _create_default_serena_config(self) -> SerenaConfig:
@@ -280,6 +290,7 @@ class SerenaMCPFactory:
         log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = None,
         trace_lsp_communication: bool | None = None,
         tool_timeout: float | None = None,
+        memory_paths: list[str] | None = None,
     ) -> FastMCP:
         """
         Create an MCP server with process-isolated SerenaAgent to prevent asyncio contamination.
@@ -321,7 +332,7 @@ class SerenaMCPFactory:
             mode_selection_def: ModeSelectionDefinition | None = None
             if modes:
                 mode_selection_def = ModeSelectionDefinition(default_modes=modes)
-            self.agent = self._create_serena_agent(config, mode_selection_def)
+            self.agent = self._create_serena_agent(config, mode_selection_def, memory_paths)
 
         except Exception as e:
             show_fatal_exception_safe(e)
