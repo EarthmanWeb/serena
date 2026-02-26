@@ -117,10 +117,7 @@ class LanguageServerManager:
             log.warning(f"Some language servers failed to start (continuing with available ones):\n{failure_messages}")
 
         if not language_servers:
-            raise Exception(
-                f"All language servers failed to start:\n"
-                + "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()])
-            )
+            raise Exception("All language servers failed to start:\n" + "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()]))
 
         return LanguageServerManager(language_servers, factory)
 
