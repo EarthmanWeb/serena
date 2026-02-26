@@ -210,15 +210,23 @@ class RubyLsp(SolidLanguageServer):
         ruby_lsp_path = RubyLsp._find_executable_with_extensions("ruby-lsp")
         if ruby_lsp_path:
             log.info(f"Found ruby-lsp at: {ruby_lsp_path}")
+            # When rbenv is active, launch via "rbenv exec" to ensure the correct
+            # Ruby version and gem environment are used. The bare shim path can
+            # resolve to a different Ruby version than .ruby-version specifies.
+            if use_rbenv:
+                return ["rbenv", "exec", "ruby-lsp"]
             return [ruby_lsp_path]
 
         # Try to install ruby-lsp globally
         log.info("ruby-lsp not found, attempting to install globally...")
+        gem_install_cmd = ["rbenv", "exec", "gem", "install", "ruby-lsp"] if use_rbenv else ["gem", "install", "ruby-lsp"]
         try:
-            subprocess.run(["gem", "install", "ruby-lsp"], check=True, capture_output=True, cwd=repository_root_path)
+            subprocess.run(gem_install_cmd, check=True, capture_output=True, cwd=repository_root_path)
             log.info("Successfully installed ruby-lsp globally")
             # Find the newly installed ruby-lsp executable
             ruby_lsp_path = RubyLsp._find_executable_with_extensions("ruby-lsp")
+            if use_rbenv:
+                return ["rbenv", "exec", "ruby-lsp"]
             return [ruby_lsp_path] if ruby_lsp_path else ["ruby-lsp"]
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode() if e.stderr else str(e)
