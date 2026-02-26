@@ -1,6 +1,7 @@
+import re
 from typing import Literal
 
-from serena.tools import ReplaceContentTool, Tool, ToolMarkerCanEdit
+from serena.tools import Tool, ToolMarkerCanEdit
 
 
 class WriteMemoryTool(Tool, ToolMarkerCanEdit):
@@ -96,6 +97,18 @@ class EditMemoryTool(Tool, ToolMarkerCanEdit):
         :param repl: the replacement string (verbatim).
         :param mode: either "literal" or "regex", specifying how the `needle` parameter is to be interpreted.
         """
-        replace_content_tool = self.agent.get_tool(ReplaceContentTool)
-        rel_path = self.memories_manager.get_memory_file_path(memory_name).relative_to(self.get_project_root())
-        return replace_content_tool.replace_content(str(rel_path), needle, repl, mode=mode, require_not_ignored=False)
+        memory_path = self.memories_manager._find_memory(memory_name)
+        if memory_path is None:
+            return f"Memory file {memory_name} not found."
+        content = memory_path.read_text(encoding="utf-8")
+        if mode == "literal":
+            if needle not in content:
+                return f"Needle not found in memory {memory_name}."
+            new_content = content.replace(needle, repl, 1)
+        else:
+            pattern = re.compile(needle, re.DOTALL | re.MULTILINE)
+            new_content, count = pattern.subn(repl, content, count=1)
+            if count == 0:
+                return f"Pattern not found in memory {memory_name}."
+        memory_path.write_text(new_content, encoding="utf-8")
+        return f"Memory {memory_name} updated successfully."
