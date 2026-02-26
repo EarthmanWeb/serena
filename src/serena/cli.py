@@ -231,6 +231,7 @@ class TopLevelCommands(AutoRegisteringGroup):
         default=None,
         help="Comma-separated list of memory directory paths (absolute or relative to project root). "
         "The first path is the primary write location; subsequent paths are additional sources. "
+        "Append ':ro' to any extra path to make it read-only (e.g. '/shared/memories:ro'). "
         "Writes to existing memories update them in-place; new memories go to the primary. "
         "Defaults to '<project_root>/.serena/memories'.",
     )

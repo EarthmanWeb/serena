@@ -35,10 +35,15 @@ class MemoriesManager:
         self._memory_dir.mkdir(parents=True, exist_ok=True)
         self._encoding = SERENA_FILE_ENCODING
         self._extra_memory_dirs: list[Path] = []
+        self._readonly_dirs: set[Path] = set()
 
     def _resolve_path(self, raw: str) -> Path:
         p = Path(raw)
         return p if p.is_absolute() else (self._project_root / p).resolve()
+
+    def _is_readonly(self, path: Path) -> bool:
+        """Return True if path lives inside a read-only extra directory."""
+        return any(path.is_relative_to(d) for d in self._readonly_dirs)
 
     def _find_memory(self, name: str) -> Path | None:
         """Search primary and extra memory dirs for a memory file."""
@@ -65,13 +70,17 @@ class MemoriesManager:
         primary.mkdir(parents=True, exist_ok=True)
         self._memory_dir = primary
         self._extra_memory_dirs = []
+        self._readonly_dirs = set()
         for raw in paths[1:]:
-            extra = self._resolve_path(raw)
+            readonly = raw.endswith(":ro")
+            extra = self._resolve_path(raw[:-3] if readonly else raw)
             if extra.exists() and extra.is_dir():
                 self._extra_memory_dirs.append(extra)
+                if readonly:
+                    self._readonly_dirs.add(extra)
             else:
                 log.warning(f"Extra memory path not found or not a directory: {extra}")
-        log.info(f"Memory paths set: primary={self._memory_dir}, extras={self._extra_memory_dirs}")
+        log.info(f"Memory paths set: primary={self._memory_dir}, extras={self._extra_memory_dirs}, readonly={self._readonly_dirs}")
 
     def get_memory_file_path(self, name: str) -> Path:
         # If the memory already exists (in primary or extras), return that path
@@ -101,6 +110,8 @@ class MemoriesManager:
 
     def save_memory(self, name: str, content: str) -> str:
         memory_file_path = self.get_memory_file_path(name)
+        if self._is_readonly(memory_file_path):
+            return f"Cannot write memory '{name}': it is in a read-only path. Do not retry this operation."
         with open(memory_file_path, "w", encoding=self._encoding) as f:
             f.write(content)
         return f"Memory {name} written."
@@ -129,6 +140,8 @@ class MemoriesManager:
         memory_file_path = self._find_memory(name)
         if memory_file_path is None:
             return f"Memory {name} not found."
+        if self._is_readonly(memory_file_path):
+            return f"Cannot delete memory '{name}': it is in a read-only path. Do not retry this operation."
         memory_file_path.unlink()
         return f"Memory {name} deleted."
 
@@ -137,6 +150,8 @@ class MemoriesManager:
         Rename or move a memory file.
         """
         old_path = self.get_memory_file_path(old_name)
+        if self._is_readonly(old_path):
+            return f"Cannot rename memory '{old_name}': it is in a read-only path. Do not retry this operation."
         new_path = self.get_memory_file_path(new_name)
 
         if not old_path.exists():
