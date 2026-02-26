@@ -34,8 +34,15 @@ class RubyLsp(SolidLanguageServer):
         Use LanguageServer.create() instead.
         """
         ruby_lsp_executable = self._setup_runtime_dependencies(config, repository_root_path)
+        # Set BUNDLE_GEMFILE to the ruby-lsp composed Gemfile (or a non-existent
+        # path if not present) to prevent Bundler from auto-loading the project's
+        # Gemfile at Ruby startup. Without this, bundler/setup.rb tries to
+        # materialize ALL project gems (e.g. mysql2) before ruby-lsp even starts,
+        # failing if any gem has unmet native dependencies.
+        ruby_lsp_gemfile = os.path.join(repository_root_path, ".ruby-lsp", "Gemfile")
+        launch_env = {"BUNDLE_GEMFILE": ruby_lsp_gemfile}
         super().__init__(
-            config, repository_root_path, ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path), "ruby", solidlsp_settings
+            config, repository_root_path, ProcessLaunchInfo(cmd=ruby_lsp_executable, cwd=repository_root_path, env=launch_env), "ruby", solidlsp_settings
         )
         self.analysis_complete = threading.Event()
         self.service_ready_event = threading.Event()
@@ -404,28 +411,31 @@ class RubyLsp(SolidLanguageServer):
         self.server.on_request("window/workDoneProgress/create", window_work_done_progress_create)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
 
-        # Prevent ruby-lsp from running "bundle install" for the project's full
-        # Gemfile. Without this, ruby-lsp creates a composed bundle that includes
-        # ALL project gems, which fails if any gem has unmet native extension
-        # dependencies (e.g. mysql2 without libmysqlclient). We:
-        # 1. Remove any stale composed bundle files (Gemfile, Gemfile.lock,
-        #    main_lockfile_hash) that reference uninstallable gems from a
-        #    previous failed attempt — Bundler still tries to load these even
-        #    when the marker exists.
-        # 2. Create the bundle_is_composed marker so ruby-lsp skips the install.
-        # Symbol extraction still works without the composed bundle.
+        # Create a minimal .ruby-lsp bundle environment to isolate ruby-lsp
+        # from the project's Gemfile. Without this, Bundler auto-loads the
+        # project's gems at Ruby startup (via bundler/setup.rb), failing if
+        # any gem has unmet native dependencies (e.g. mysql2).
+        # The BUNDLE_GEMFILE env var (set in __init__) points here.
         ruby_lsp_dir = os.path.join(self.repository_root_path, ".ruby-lsp")
         os.makedirs(ruby_lsp_dir, exist_ok=True)
-        for stale_file in ("Gemfile", "Gemfile.lock", "main_lockfile_hash"):
+        # Remove stale files from previous failed composed bundle attempts
+        for stale_file in ("Gemfile.lock", "main_lockfile_hash"):
             stale_path = os.path.join(ruby_lsp_dir, stale_file)
             if os.path.exists(stale_path):
                 os.remove(stale_path)
                 log.info(f"Removed stale {stale_file} from {ruby_lsp_dir}")
+        # Write a minimal Gemfile with just ruby-lsp
+        gemfile_path = os.path.join(ruby_lsp_dir, "Gemfile")
+        if not os.path.exists(gemfile_path):
+            with open(gemfile_path, "w") as f:
+                f.write('source "https://rubygems.org"\ngem "ruby-lsp"\n')
+            log.info(f"Created minimal Gemfile at {gemfile_path}")
+        # Create composed marker so ruby-lsp skips its own bundle setup
         composed_marker = os.path.join(ruby_lsp_dir, "bundle_is_composed")
         if not os.path.exists(composed_marker):
             with open(composed_marker, "w") as f:
                 f.write("")
-            log.info(f"Created composed bundle marker at {composed_marker} to skip bundle install")
+            log.info(f"Created composed bundle marker at {composed_marker}")
 
         log.info("Starting ruby-lsp server process")
         self.server.start()
