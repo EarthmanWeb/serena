@@ -404,17 +404,25 @@ class RubyLsp(SolidLanguageServer):
         self.server.on_request("window/workDoneProgress/create", window_work_done_progress_create)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
 
-        # Pre-create the composed bundle marker to prevent ruby-lsp from running
-        # "bundle install" for the project's full Gemfile. Without this, ruby-lsp
-        # creates a composed bundle that includes ALL project gems, which fails if
-        # any gem has unmet native extension dependencies (e.g. mysql2 without
-        # libmysqlclient). The marker tells ruby-lsp the bundle is already composed,
-        # so it skips the install step. Symbol extraction still works without the
-        # composed bundle — it only affects dependency-aware features.
+        # Prevent ruby-lsp from running "bundle install" for the project's full
+        # Gemfile. Without this, ruby-lsp creates a composed bundle that includes
+        # ALL project gems, which fails if any gem has unmet native extension
+        # dependencies (e.g. mysql2 without libmysqlclient). We:
+        # 1. Remove any stale composed bundle files (Gemfile, Gemfile.lock,
+        #    main_lockfile_hash) that reference uninstallable gems from a
+        #    previous failed attempt — Bundler still tries to load these even
+        #    when the marker exists.
+        # 2. Create the bundle_is_composed marker so ruby-lsp skips the install.
+        # Symbol extraction still works without the composed bundle.
         ruby_lsp_dir = os.path.join(self.repository_root_path, ".ruby-lsp")
+        os.makedirs(ruby_lsp_dir, exist_ok=True)
+        for stale_file in ("Gemfile", "Gemfile.lock", "main_lockfile_hash"):
+            stale_path = os.path.join(ruby_lsp_dir, stale_file)
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
+                log.info(f"Removed stale {stale_file} from {ruby_lsp_dir}")
         composed_marker = os.path.join(ruby_lsp_dir, "bundle_is_composed")
         if not os.path.exists(composed_marker):
-            os.makedirs(ruby_lsp_dir, exist_ok=True)
             with open(composed_marker, "w") as f:
                 f.write("")
             log.info(f"Created composed bundle marker at {composed_marker} to skip bundle install")
