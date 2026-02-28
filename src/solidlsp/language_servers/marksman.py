@@ -114,6 +114,26 @@ class Marksman(SolidLanguageServer):
         return super().is_ignored_dirname(dirname) or dirname in ["node_modules", ".obsidian", ".vitepress", ".vuepress"]
 
     @override
+    def request_document_overview(self, relative_file_path: str) -> list[UnifiedSymbolInformation]:
+        """Return all heading levels flattened rather than only H1 root symbols.
+
+        Marksman nests headings hierarchically (H2 under H1, H3 under H2, etc.) because
+        hierarchicalDocumentSymbolSupport is enabled. The default implementation returns only
+        root_symbols (H1), so get_symbols_overview with depth=0 would silently omit H2–H6.
+        Flattening ensures all headings appear at the top level of the overview.
+        """
+        document_symbols = self.request_document_symbols(relative_file_path)
+
+        def collect_all(symbols: list[UnifiedSymbolInformation]) -> list[UnifiedSymbolInformation]:
+            result = []
+            for sym in symbols:
+                result.append(sym)
+                result.extend(collect_all(sym.get("children", [])))
+            return result
+
+        return collect_all(document_symbols.root_symbols)
+
+    @override
     def request_document_symbols(self, relative_file_path: str, file_buffer: LSPFileBuffer | None = None) -> DocumentSymbols:
         """Override to remap Marksman's heading symbol kinds from String to Namespace.
 
