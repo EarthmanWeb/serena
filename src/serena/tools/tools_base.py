@@ -310,6 +310,10 @@ class Tool(Component):
             except Exception as e:
                 log.error(f"Error saving language server cache: {e}")
 
+            if self.agent.serena_config.debug_tool_calls:
+                input_repr = "\n".join(f"  {k}: {v!r}" for k, v in kwargs.items()) or "  (no parameters)"
+                result = f"[DEBUG - Tool Input]\n{input_repr}\n\n[Tool Output]\n{result}"
+
             return result
 
         # execute the tool in the agent's task executor, with timeout

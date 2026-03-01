@@ -535,6 +535,11 @@ class SerenaConfig(SharedConfig):
     """List of paths to ignore across all projects. Same syntax as gitignore, so you can use * and **.
     These patterns are merged additively with each project's own ignored_paths."""
 
+    debug_tool_calls: bool = False
+    """When enabled, tool responses returned to the LLM will include both the input parameters ('in')
+    and the output ('out'), making it easier to debug symbol tool calls by seeing exactly what was
+    passed and what was returned."""
+
     # settings with overridden defaults
     default_modes: Sequence[str] | None = ("interactive", "editing")
     symbol_info_budget: float = 10.0
