@@ -97,8 +97,8 @@ class EditMemoryTool(Tool, ToolMarkerCanEdit):
         :param repl: the replacement string (verbatim).
         :param mode: either "literal" or "regex", specifying how the `needle` parameter is to be interpreted.
         """
-        memory_path = self.memories_manager._find_memory(memory_name)
-        if memory_path is None:
+        memory_path = self.memories_manager.get_memory_file_path(memory_name)
+        if not memory_path.exists():
             return f"Memory file {memory_name} not found."
         if self.memories_manager._is_readonly(memory_path):
             return f"Cannot edit memory '{memory_name}': it is in a read-only path. Do not retry this operation."
