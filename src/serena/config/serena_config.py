@@ -501,6 +501,7 @@ class ProjectConfig(SharedConfig, ModeSelectionDefinitionWithAddedModes):
             read_only_memory_patterns=data.get("read_only_memory_patterns", []),
             ignored_memory_patterns=data.get("ignored_memory_patterns", []),
             ignore_all_files_in_gitignore=data["ignore_all_files_in_gitignore"],
+            ignore_all_dot_files=data["ignore_all_dot_files"],
             initial_prompt=data["initial_prompt"],
             encoding=data["encoding"],
             line_ending=line_ending,
