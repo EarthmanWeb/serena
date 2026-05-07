@@ -301,6 +301,16 @@ class TopLevelCommands(AutoRegisteringGroup):
     @click.option("--trace-lsp-communication", type=bool, is_flag=False, default=None, help="Whether to trace LSP communication.")
     @click.option("--tool-timeout", type=float, default=None, help="Override tool execution timeout in config.")
     @click.option(
+        "--memory-path",
+        type=str,
+        default=None,
+        help="Comma-separated list of memory directory paths (absolute or relative to project root). "
+        "The first path is the primary write location; subsequent paths are additional sources. "
+        "Append ':ro' to any extra path to make it read-only (e.g. '/shared/memories:ro'). "
+        "Writes to existing memories update them in-place; new memories go to the primary. "
+        "Defaults to '<project_root>/.serena/memories'.",
+    )
+    @click.option(
         "--project-from-cwd",
         is_flag=True,
         default=False,
@@ -323,6 +333,7 @@ class TopLevelCommands(AutoRegisteringGroup):
         log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None,
         trace_lsp_communication: bool | None,
         tool_timeout: float | None,
+        memory_path: str | None,
     ) -> None:
         from serena.mcp import SerenaMCPFactory
 
@@ -362,6 +373,8 @@ class TopLevelCommands(AutoRegisteringGroup):
         if default_modes or added_modes:
             mode_selection_def = ModeSelectionDefinitionWithAddedModes(default_modes=default_modes or None, added_modes=added_modes or None)
 
+        memory_paths_list = [p.strip() for p in memory_path.split(",") if p.strip()] if memory_path else None
+
         factory = SerenaMCPFactory(context=context, project=project_file, memory_log_handler=memory_log_handler)
         server = factory.create_mcp_server(
             host=host,
@@ -374,6 +387,7 @@ class TopLevelCommands(AutoRegisteringGroup):
             log_level=log_level,
             trace_lsp_communication=trace_lsp_communication,
             tool_timeout=tool_timeout,
+            memory_paths=memory_paths_list,
         )
         if project_file_arg:
             log.warning(

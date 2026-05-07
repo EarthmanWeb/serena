@@ -36,9 +36,9 @@ class TestMarkdownLanguageServerBasics:
 
         # Verify that markdown headings are remapped from String to Namespace
         for symbol in all_symbols:
-            assert symbol["kind"] == SymbolKind.Namespace, (
-                f"Heading '{symbol['name']}' should have kind Namespace, got {SymbolKind(symbol['kind']).name}"
-            )
+            assert (
+                symbol["kind"] == SymbolKind.Namespace
+            ), f"Heading '{symbol['name']}' should have kind Namespace, got {SymbolKind(symbol['kind']).name}"
 
     @pytest.mark.parametrize("language_server", [Language.MARKDOWN], indirect=True)
     def test_markdown_request_symbols_from_guide(self, language_server: SolidLanguageServer) -> None:
@@ -80,9 +80,9 @@ class TestMarkdownLanguageServerBasics:
 
         for symbol in all_symbols:
             ls_symbol = LanguageServerSymbol(symbol)
-            assert not ls_symbol.is_low_level(), (
-                f"Heading '{symbol['name']}' should not be low-level (kind={SymbolKind(symbol['kind']).name})"
-            )
+            assert (
+                not ls_symbol.is_low_level()
+            ), f"Heading '{symbol['name']}' should not be low-level (kind={SymbolKind(symbol['kind']).name})"
 
     @pytest.mark.parametrize("language_server", [Language.MARKDOWN], indirect=True)
     def test_markdown_nested_headings_remapped(self, language_server: SolidLanguageServer) -> None:
@@ -96,7 +96,23 @@ class TestMarkdownLanguageServerBasics:
             assert symbol["kind"] == SymbolKind.Namespace, f"Nested heading '{symbol['name']}' should be remapped to Namespace"
 
     @pytest.mark.parametrize("language_server", [Language.MARKDOWN], indirect=True)
-    def test_bare_symbol_names(self, language_server) -> None:
+    def test_markdown_overview_includes_all_heading_levels(self, language_server: SolidLanguageServer) -> None:
+        """Test that request_document_overview returns all heading levels flattened.
+
+        Verifies that the Marksman override of request_document_overview flattens the
+        heading hierarchy so that H2+ headings appear directly in the overview result,
+        rather than being buried as nested children requiring depth>0 to surface.
+        """
+        overview_symbols = language_server.request_document_overview("README.md")
+        overview_names = [sym["name"] for sym in overview_symbols]
+
+        # README.md has H1 "Test Repository", H2s like "Overview"/"Features", and H3s like "Installation"
+        assert "Test Repository" in overview_names, "H1 heading should appear in overview"
+        assert "Overview" in overview_names, "H2 heading should appear in overview without needing depth>0"
+        assert "Installation" in overview_names, "H3 heading should appear in overview without needing depth>0"
+
+    @pytest.mark.parametrize("language_server", [Language.MARKDOWN], indirect=True)
+    def test_bare_symbol_names(self, language_server: SolidLanguageServer) -> None:
         all_symbols = request_all_symbols(language_server)
         malformed_symbols = []
         for s in all_symbols:

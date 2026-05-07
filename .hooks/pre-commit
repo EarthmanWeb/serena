@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+# Pre-commit hook: auto-bump patch version in pyproject.toml and __init__.py
+# Only runs on the 'swe' branch.
+
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ "$CURRENT_BRANCH" != "swe" ]; then
+    exit 0
+fi
+
+# If pyproject.toml is already staged, skip auto-bump (manual version set)
+if git diff --cached --name-only | grep -q "^pyproject.toml$"; then
+    exit 0
+fi
+
+PYPROJECT="pyproject.toml"
+INIT_PY="src/serena/__init__.py"
+
+# Get current version from pyproject.toml
+CURRENT_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$PYPROJECT")
+
+if [ -z "$CURRENT_VERSION" ]; then
+    echo "Error: Could not read version from $PYPROJECT"
+    exit 1
+fi
+
+# Split version into parts
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+# Get upstream patch as the base prefix (e.g. "4" from "0.1.4")
+UPSTREAM_VERSION=$(git show upstream/main:pyproject.toml 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p')
+IFS='.' read -r _ _ UPSTREAM_PATCH <<< "$UPSTREAM_VERSION"
+
+# Strip the upstream patch prefix to isolate the counter (e.g. "41" -> "1")
+COUNTER="${PATCH#$UPSTREAM_PATCH}"
+if [ -z "$COUNTER" ]; then
+    COUNTER=0
+fi
+
+# Increment counter and reconstruct patch (e.g. "4" + "10" = "410")
+NEW_COUNTER=$((COUNTER + 1))
+NEW_PATCH="${UPSTREAM_PATCH}${NEW_COUNTER}"
+NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+# Update pyproject.toml
+sed -i '' "s/^version = \"${CURRENT_VERSION}\"/version = \"${NEW_VERSION}\"/" "$PYPROJECT"
+
+# Update __init__.py
+sed -i '' "s/^__version__ = \"${CURRENT_VERSION}\"/__version__ = \"${NEW_VERSION}\"/" "$INIT_PY"
+
+# Stage the updated files so the version bump is included in the commit
+git add "$PYPROJECT" "$INIT_PY"
+
+echo "Version bumped: ${CURRENT_VERSION} -> ${NEW_VERSION}"

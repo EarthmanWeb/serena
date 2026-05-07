@@ -523,6 +523,7 @@ class SerenaAgent:
         context: SerenaAgentContext | None = None,
         modes: ModeSelectionDefinition | None = None,
         memory_log_handler: MemoryLogHandler | None = None,
+        memory_paths: list[str] | None = None,
     ):
         """
         :param project: the project to load immediately or None to not load any project; may be a path to the project or a name of
@@ -552,6 +553,8 @@ class SerenaAgent:
         # initialise active modes (baseline modes prior to project activation)
         self._active_modes: ActiveModes
         self._update_active_modes(log_message=False)
+
+        self._memory_paths = memory_paths
 
         # determine registered project to be activated (if any)
         registered_project_to_activate: RegisteredProject | None = (
@@ -1083,6 +1086,7 @@ class SerenaAgent:
             return False
 
         log.info(f"Activating {project.project_name} at {project.project_root}")
+        project.set_memory_paths(self._memory_paths)
 
         # check if the project requires a different language backend than the one initialized at startup
         project_backend = project.project_config.language_backend

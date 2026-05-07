@@ -37,16 +37,19 @@ class MemoriesManager:
     def __init__(
         self,
         serena_data_folder: str | Path | None,
+        project_root: str | Path | None = None,
         read_only_memory_patterns: Sequence[str] = (),
         ignored_memory_patterns: Sequence[str] = (),
     ):
         """
         :param serena_data_folder: the absolute path to the project's .serena data folder
+        :param project_root: the absolute path to the project root (used for resolving relative memory paths)
         :param read_only_memory_patterns: whether to allow writing global memories in tool execution contexts
         :param ignored_memory_patterns: regex patterns for memories to completely exclude from listing, reading, and writing.
             Matching memories will not appear in list_memories or activate_project output and cannot be accessed
             via read_memory or write_memory. Use read_file on the raw path to access ignored memory files.
         """
+        self._project_root: Path | None = Path(project_root) if project_root is not None else None
         self._project_memory_dir: Path | None = None
         if serena_data_folder is not None:
             self._project_memory_dir = Path(serena_data_folder) / "memories"
@@ -54,6 +57,17 @@ class MemoriesManager:
         self._encoding = SERENA_FILE_ENCODING
         self._read_only_memory_patterns = [re.compile(pattern) for pattern in set(read_only_memory_patterns)]
         self._ignored_memory_patterns = [re.compile(pattern) for pattern in set(ignored_memory_patterns)]
+        # Fork enhancements: multi-directory memory paths with read-only support
+        self._extra_memory_dirs: list[Path] = []
+        self._readonly_dirs: set[Path] = set()
+
+    def _resolve_path(self, raw: str) -> Path:
+        p = Path(raw)
+        if p.is_absolute():
+            return p
+        if self._project_root is not None:
+            return (self._project_root / p).resolve()
+        return p.resolve()
 
     def _is_read_only_memory(self, name: str) -> bool:
         for pattern in self._read_only_memory_patterns:
@@ -74,10 +88,77 @@ class MemoriesManager:
                 f"Use the read_file tool on the raw file path instead."
             )
 
+    def _is_readonly(self, path: Path) -> bool:
+        """Return True if path lives inside a read-only extra directory."""
+        return any(path.is_relative_to(d) for d in self._readonly_dirs)
+
+    def _find_memory(self, name: str) -> Path | None:
+        """Search primary, global, and extra memory dirs for a memory file."""
+        name = name.replace(".md", "").replace(os.sep, "/")
+        parts = name.split("/")
+
+        # Global memories are searched in the global dir
+        if self._is_global(name):
+            if name == self.GLOBAL_TOPIC:
+                return None
+            sub_name = name[len(self.GLOBAL_TOPIC) + 1 :]
+            sub_parts = sub_name.split("/")
+            filename = f"{sub_parts[-1]}.md"
+            subdir = "/".join(sub_parts[:-1]) if len(sub_parts) > 1 else ""
+            candidate = self._global_memory_dir / subdir / filename if subdir else self._global_memory_dir / filename
+            if candidate.exists():
+                return candidate
+            return None
+
+        # Project-local: search primary dir, then extra dirs
+        filename = f"{parts[-1]}.md"
+        subdir = "/".join(parts[:-1]) if len(parts) > 1 else ""
+        search_dirs = []
+        if self._project_memory_dir is not None:
+            search_dirs.append(self._project_memory_dir)
+        search_dirs.extend(self._extra_memory_dirs)
+        for base in search_dirs:
+            candidate = base / subdir / filename if subdir else base / filename
+            if candidate.exists():
+                return candidate
+        return None
+
+    def set_memory_paths(self, paths: list[str]) -> None:
+        """Override memory directories.
+
+        The first path becomes the primary write location; subsequent paths are
+        additional sources that are also searched. Writes to existing memories
+        update them in-place; new memories are created in the primary directory.
+        """
+        if not paths:
+            return
+        primary = self._resolve_path(paths[0])
+        primary.mkdir(parents=True, exist_ok=True)
+        self._project_memory_dir = primary
+        self._extra_memory_dirs = []
+        self._readonly_dirs = set()
+        for raw in paths[1:]:
+            readonly = raw.endswith(":ro")
+            extra = self._resolve_path(raw[:-3] if readonly else raw)
+            if extra.exists() and extra.is_dir():
+                self._extra_memory_dirs.append(extra)
+                if readonly:
+                    self._readonly_dirs.add(extra)
+            else:
+                log.warning(f"Extra memory path not found or not a directory: {extra}")
+        log.info(f"Memory paths set: primary={self._project_memory_dir}, extras={self._extra_memory_dirs}, readonly={self._readonly_dirs}")
+
     def _is_global(self, name: str) -> bool:
         return name == self.GLOBAL_TOPIC or name.startswith(self.GLOBAL_TOPIC + "/")
 
     def get_memory_file_path(self, name: str) -> Path:
+        # If the memory already exists (in primary, global, or extras), return that path
+        # so that writes update in-place rather than duplicating to primary.
+        existing = self._find_memory(name)
+        if existing is not None:
+            return existing
+
+        # New memory: resolve the path for creation
         # Strip .md extension if present
         name = name.replace(".md", "").replace(os.sep, "/")
         parts = name.split("/")
@@ -119,8 +200,8 @@ class MemoriesManager:
 
     def load_memory(self, name: str) -> str:
         self._check_not_ignored(name)
-        memory_file_path = self.get_memory_file_path(name)
-        if not memory_file_path.exists():
+        memory_file_path = self._find_memory(name)
+        if memory_file_path is None:
             return f"Memory file {name} not found, consider creating it with the `write_memory` tool if you need it."
         with open(memory_file_path, encoding=self._encoding) as f:
             return f.read()
@@ -129,6 +210,8 @@ class MemoriesManager:
         self._check_not_ignored(name)
         self._check_write_access(name, is_tool_context)
         memory_file_path = self.get_memory_file_path(name)
+        if self._is_readonly(memory_file_path):
+            return f"Cannot write memory '{name}': it is in a read-only path. Do not retry this operation."
         with open(memory_file_path, "w", encoding=self._encoding) as f:
             f.write(content)
         return f"Memory {name} written."
@@ -171,7 +254,7 @@ class MemoriesManager:
             memory_name = prefix + rel
             if self._is_ignored_memory(memory_name):
                 continue
-            result.add(memory_name, is_read_only=self._is_read_only_memory(memory_name))
+            result.add(memory_name, is_read_only=self._is_read_only_memory(memory_name) or self._is_readonly(md_file))
         return result
 
     def list_global_memories(self, subtopic: str = "") -> MemoriesList:
@@ -187,10 +270,38 @@ class MemoriesManager:
             dir_path = dir_path / topic.replace("/", os.sep)
         return self._list_memories(dir_path, self._project_memory_dir)
 
+    def _list_extra_memories(self, topic: str = "") -> MemoriesList:
+        """List memories from extra memory directories, respecting ignore/readonly patterns."""
+        result = self.MemoriesList()
+        seen: set[str] = set()
+        # Collect names already known from primary dir to avoid duplicates
+        if self._project_memory_dir is not None:
+            search_dir = self._project_memory_dir / topic.replace("/", os.sep) if topic else self._project_memory_dir
+            if search_dir.exists():
+                for md_file in search_dir.rglob("*.md"):
+                    rel = str(md_file.relative_to(self._project_memory_dir).with_suffix("")).replace(os.sep, "/")
+                    seen.add(rel)
+
+        for base in self._extra_memory_dirs:
+            search_dir = base / topic.replace("/", os.sep) if topic else base
+            if not search_dir.exists():
+                continue
+            for md_file in search_dir.rglob("*.md"):
+                rel = str(md_file.relative_to(base).with_suffix("")).replace(os.sep, "/")
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                if self._is_ignored_memory(rel):
+                    continue
+                is_ro = self._is_read_only_memory(rel) or self._is_readonly(md_file)
+                result.add(rel, is_read_only=is_ro)
+        return result
+
     def list_memories(self, topic: str = "") -> MemoriesList:
         """
         Lists all memories, optionally filtered by topic.
         If the topic is omitted, both global and project-specific memories are returned.
+        Also includes memories from extra memory directories.
         """
         memories: MemoriesManager.MemoriesList
 
@@ -201,18 +312,24 @@ class MemoriesManager:
                 memories = self.list_global_memories(subtopic=subtopic)
             else:
                 memories = self.list_project_memories(topic=topic)
+                # Also include from extra dirs
+                memories.extend(self._list_extra_memories(topic=topic))
         else:
             memories = self.list_project_memories()
             memories.extend(self.list_global_memories())
+            # Also include from extra dirs
+            memories.extend(self._list_extra_memories())
 
         return memories
 
     def delete_memory(self, name: str, is_tool_context: bool) -> str:
         self._check_not_ignored(name)
         self._check_write_access(name, is_tool_context)
-        memory_file_path = self.get_memory_file_path(name)
-        if not memory_file_path.exists():
+        memory_file_path = self._find_memory(name)
+        if memory_file_path is None:
             return f"Memory {name} not found."
+        if self._is_readonly(memory_file_path):
+            return f"Cannot delete memory '{name}': it is in a read-only path. Do not retry this operation."
         memory_file_path.unlink()
         return f"Memory {name} deleted."
 
@@ -226,6 +343,8 @@ class MemoriesManager:
         self._check_write_access(new_name, is_tool_context)
 
         old_path = self.get_memory_file_path(old_name)
+        if self._is_readonly(old_path):
+            return f"Cannot rename memory '{old_name}': it is in a read-only path. Do not retry this operation."
         new_path = self.get_memory_file_path(new_name)
 
         if not old_path.exists():
@@ -284,6 +403,7 @@ class Project(ToStringMixin):
         ignored_memory_patterns = serena_config.ignored_memory_patterns + project_config.ignored_memory_patterns
         self.memories_manager = MemoriesManager(
             self._serena_data_folder,
+            project_root=self.project_root,
             read_only_memory_patterns=read_only_memory_patterns,
             ignored_memory_patterns=ignored_memory_patterns,
         )
@@ -357,6 +477,10 @@ class Project(ToStringMixin):
     @property
     def project_name(self) -> str:
         return self.project_config.project_name
+
+    def set_memory_paths(self, paths: list[str] | None) -> None:
+        if paths:
+            self.memories_manager.set_memory_paths(paths)
 
     @classmethod
     def load(

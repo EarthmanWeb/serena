@@ -195,6 +195,39 @@ class TestPhpLanguageServers:
             assert usage_in_index_php in actual_locations_comparable, "Usage of helperFunction in index.php not found"
 
     @pytest.mark.parametrize("language_server", [Language.PHP], indirect=True)
+    def test_find_symbol_class_method(self, language_server: SolidLanguageServer) -> None:
+        """Test that find_symbol works for class methods via name path pattern (Class/method).
+
+        Regression test: Intelephense can return flat SymbolInformation[] for some PHP files,
+        causing methods to appear as root-level symbols with no parent reference.
+        In that case, find_symbol("ClassName/method") must still match using containerName.
+        """
+        from serena.symbol import LanguageServerSymbol
+
+        doc_symbols = language_server.request_document_symbols("class_example.php")
+        root_symbols = doc_symbols.root_symbols
+
+        all_names = [s["name"] for s in doc_symbols.iter_symbols()]
+        assert "TestWebhookHandler" in all_names, f"TestWebhookHandler class not found. Found: {all_names}"
+        assert "handle_request" in all_names, f"handle_request method not found. Found: {all_names}"
+        assert "TestProfileManager" in all_names, f"TestProfileManager class not found. Found: {all_names}"
+        assert "get_id" in all_names, f"get_id method not found. Found: {all_names}"
+
+        found = []
+        for root in root_symbols:
+            found.extend(LanguageServerSymbol(root).find("TestWebhookHandler/handle_request"))
+        assert found, (
+            "find_symbol('TestWebhookHandler/handle_request') returned no results. "
+            "Likely cause: Intelephense returned flat SymbolInformation[] with no parent-child links "
+            "and the containerName fallback is not working."
+        )
+
+        found_profile = []
+        for root in root_symbols:
+            found_profile.extend(LanguageServerSymbol(root).find("TestProfileManager/get_id"))
+        assert found_profile, "find_symbol('TestProfileManager/get_id') returned no results."
+
+    @pytest.mark.parametrize("language_server", [Language.PHP], indirect=True)
     def test_find_symbol(self, language_server: SolidLanguageServer) -> None:
         """Test that document symbols are properly retrieved after Intelephense capability fix."""
         from solidlsp.ls_utils import SymbolUtils
@@ -228,14 +261,14 @@ class TestPhpLanguageServers:
         assert "Dog" in root_names, f"Dog class not found at root level. Roots: {root_names}"
         assert "Cat" in root_names, f"Cat class not found at root level. Roots: {root_names}"
 
-        # Verify Dog has method children — this is the key assertion for hierarchical support.
+        # Verify Dog has method children -- this is the key assertion for hierarchical support.
         # With a flat response, Dog would have no children and all methods would be at root level.
         dog_symbol = next((s for s in root_symbols if s.get("name") == "Dog"), None)
         assert dog_symbol is not None, "Dog class not found in root symbols"
         dog_children = dog_symbol.get("children", [])
         dog_child_names = [c.get("name") for c in dog_children]
         assert len(dog_child_names) > 0, (
-            f"Dog class has no children — hierarchicalDocumentSymbolSupport is not working. All root symbols: {root_names}"
+            f"Dog class has no children -- hierarchicalDocumentSymbolSupport is not working. All root symbols: {root_names}"
         )
         expected_methods = {"greet", "fetch", "getBreed", "describe"}
         missing = expected_methods - set(dog_child_names)
@@ -267,7 +300,7 @@ class TestPhpLanguageServers:
             assert SymbolUtils.symbol_tree_contains_name([dog_root], "greet"), "greet should be nested under Dog in symbol tree"
 
     @pytest.mark.parametrize("language_server", _php_servers, indirect=True)
-    def test_bare_symbol_names(self, language_server) -> None:
+    def test_bare_symbol_names(self, language_server: SolidLanguageServer) -> None:
         all_symbols = request_all_symbols(language_server)
         malformed_symbols = []
         for s in all_symbols:

@@ -381,7 +381,11 @@ class SolidLanguageServer(ABC):
         A language-specific condition for directories that should always be ignored. For example, venv
         in Python and node_modules in JS/TS should be ignored always.
         """
-        return dirname in self._ALWAYS_IGNORED_DIRS
+        if dirname in self._ALWAYS_IGNORED_DIRS:
+            return True
+        if self._ignore_all_dot_files and dirname.startswith("."):
+            return True
+        return False
 
     @staticmethod
     def _determine_log_level(line: str) -> int:
@@ -506,6 +510,7 @@ class SolidLanguageServer(ABC):
         self._ls_resources_dir = self.ls_resources_dir(solidlsp_settings)
         log.debug(f"Custom config (LS-specific settings) for {lang}: {self._custom_settings}")
         self._encoding = config.encoding
+        self._ignore_all_dot_files = config.ignore_all_dot_files
         self.repository_root_path: str = repository_root_path
 
         log.debug(
@@ -2046,11 +2051,12 @@ class SolidLanguageServer(ABC):
                 raise FileNotFoundError(f"File or directory not found: {within_abs_path}")
             if os.path.isfile(within_abs_path):
                 if self.is_ignored_path(within_relative_path):
-                    log.error("You passed a file explicitly, but it is ignored. This is probably an error. File: %s", within_relative_path)
-                    return []
-                else:
-                    root_nodes = self.request_document_symbols(within_relative_path).root_symbols
-                    return root_nodes
+                    log.warning(
+                        "File %s is ignored by ignore patterns but was explicitly requested; proceeding anyway.",
+                        within_relative_path,
+                    )
+                root_nodes = self.request_document_symbols(within_relative_path).root_symbols
+                return root_nodes
 
         # Helper function to recursively process directories
         def process_directory(rel_dir_path: str) -> list[ls_types.UnifiedSymbolInformation]:

@@ -274,6 +274,7 @@ class ProjectConfig(SharedConfig, ModeSelectionDefinitionWithAddedModes):
     additional_workspace_folders: list[str] = field(default_factory=list)
     read_only: bool = False
     ignore_all_files_in_gitignore: bool = True
+    ignore_all_dot_files: bool = True
     initial_prompt: str = ""
     encoding: str = DEFAULT_SOURCE_FILE_ENCODING
 
@@ -743,6 +744,11 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
       - "$projectDir/.serena" (default, stores data inside the project)
       - "/projects-metadata/$projectFolderName/.serena" (stores data in a central location)
     """
+
+    debug_tool_calls: bool = False
+    """When enabled, tool responses returned to the LLM will include both the input parameters ('in')
+    and the output ('out'), making it easier to debug symbol tool calls by seeing exactly what was
+    passed and what was returned."""
 
     # settings with overridden defaults
     language_backend: LanguageBackend = LanguageBackend.LSP

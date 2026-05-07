@@ -29,6 +29,7 @@ class LanguageServerFactory:
         ls_specific_settings: dict | None = None,
         additional_workspace_folders: list[str] | None = None,
         trace_lsp_communication: bool = False,
+        ignore_all_dot_files: bool = True,
     ):
         self.project_root = project_root
         self.project_data_path = project_data_path
@@ -38,6 +39,7 @@ class LanguageServerFactory:
         self.ls_specific_settings = ls_specific_settings
         self.additional_workspace_folders = additional_workspace_folders or []
         self.trace_lsp_communication = trace_lsp_communication
+        self.ignore_all_dot_files = ignore_all_dot_files
 
     def create_language_server(self, language: Language) -> SolidLanguageServer:
         ls_config = LanguageServerConfig(
@@ -45,6 +47,7 @@ class LanguageServerFactory:
             ignored_paths=self.ignored_patterns,
             trace_lsp_communication=self.trace_lsp_communication,
             encoding=self.encoding,
+            ignore_all_dot_files=self.ignore_all_dot_files,
         )
 
         log.info(f"Creating language server instance for {self.project_root}, language={language}.")
@@ -133,16 +136,14 @@ class LanguageServerManager:
             elif thread.language_server is not None:
                 language_servers[thread.language] = thread.language_server
 
-        # If any server failed to start up, raise an exception and stop all started language servers.
-        # We intentionally fail fast here. The user's intention is to work with all the specified languages,
-        # so if any of them is not available, it is better to make symbolic tool calls fail, bringing the issue to the
-        # user's attention instead of silently continuing with a subset of the language servers and potentially
-        # causing suboptimal agent behaviour.
+        # Log failures but continue with whatever servers started successfully.
+        # Only fail if ALL servers failed to start.
         if exceptions:
-            for ls in language_servers.values():
-                ls.stop()
             failure_messages = "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()])
-            raise LanguageServerManagerInitialisationError(f"Failed to start {len(exceptions)} language server(s):\n{failure_messages}")
+            log.warning(f"Some language servers failed to start (continuing with available ones):\n{failure_messages}")
+
+        if not language_servers:
+            raise LanguageServerManagerInitialisationError("All language servers failed to start:\n" + "\n".join([f"{lang.value}: {e}" for lang, e in exceptions.items()]))
 
         return LanguageServerManager(language_servers, factory)
 
@@ -155,12 +156,18 @@ class LanguageServerManager:
     def _get_suitable_language_server(self, relative_path: str) -> SolidLanguageServer | None:
         """:param relative_path: relative path to a file"""
         for candidate in self._language_servers.values():
-            if not candidate.is_ignored_path(relative_path, ignore_unsupported_files=True):
+            fn_matcher = candidate.language.get_source_fn_matcher()
+            if fn_matcher.is_relevant_filename(relative_path):
                 return candidate
         return None
 
     def get_language_server(self, relative_path: str) -> SolidLanguageServer:
-        """:param relative_path: relative path to a file"""
+        """Routes a file to the appropriate language server based on file extension.
+
+        When multiple language servers are configured, finds the first one whose
+        language supports the given file's extension. Falls back to the default
+        language server if no match is found.
+        """
         ls: SolidLanguageServer | None = None
         if len(self._language_servers) > 1:
             if os.path.isdir(relative_path):
