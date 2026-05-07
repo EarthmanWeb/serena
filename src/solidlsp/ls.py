@@ -370,7 +370,6 @@ class SolidLanguageServer(ABC):
             ".tox",
             ".nox",  # test runners
             ".idea",  # IDE internals
-            ".serena",  # serena's own data
             ".vscode",  # Doesn't contain symbols
         }
     )
