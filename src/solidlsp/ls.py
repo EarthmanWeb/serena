@@ -354,7 +354,9 @@ class SolidLanguageServer(ABC):
     DOCUMENT_SYMBOL_CACHE_FILENAME = "document_symbols.pkl"
 
     # Directories that should always be ignored regardless of language:
-    # VCS internals, virtual environments, caches, and serena's own data.
+    # VCS internals, virtual environments, caches, and tool internals.
+    # Note: .serena is intentionally excluded — memory files stored there
+    # are valid targets for symbol retrieval when markdown is configured.
     _ALWAYS_IGNORED_DIRS = frozenset(
         {
             ".git",
@@ -382,7 +384,7 @@ class SolidLanguageServer(ABC):
         """
         if dirname in self._ALWAYS_IGNORED_DIRS:
             return True
-        if self._ignore_all_dot_files and dirname.startswith("."):
+        if self._ignore_all_dot_files and dirname.startswith(".") and dirname not in (".", ".."):
             return True
         return False
 
