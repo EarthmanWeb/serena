@@ -20,6 +20,18 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit):
         References to other memories should be inside backticks and prefixed with mem:,
         e.g., `mem:auth`.
 
+        Begin the content with a YAML front-matter block so the memory is discoverable by
+        `search_memories_by_front_matter`:
+
+            ---
+            name: <short title of this memory>
+            description: <one sentence: what this memory is about / why you'd open it>
+            metadata:
+              type: <category, e.g. reference | feedback | project | feature | domain>
+            ---
+
+        Then the body. (A project may define a stricter front-matter convention; follow it if present.)
+
         :param memory_name: memory name
         :param content: memory content, utf8-encoded
         :param max_chars: see other tools
