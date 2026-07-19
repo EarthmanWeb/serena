@@ -764,3 +764,102 @@ class TestAutoPrefixBareReferences:
         # idempotent: the second run should not touch anything
         assert second.total_replacements == 0
         assert fs_manager.load_memory("docs") == "the mem:auth/login process"
+
+
+class TestSearchMemoriesByName:
+    def test_substring_match_finds_memory_by_partial_name(self, fs_manager: MemoryManager) -> None:
+        # The REF_SECURITY_SCANNER case: memory has NO front matter, opens with an H1.
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", "# REF_SECURITY_SCANNER — Convenely Security Scanner Rules\n\nAllowlist logic.")
+        _write(fs_manager, "ref/REF_STRIPE_API", "# Stripe API notes")
+        result = fs_manager.search_memories_by_name("security").to_dict()
+        assert result == {"memories": ["ref/REF_SECURITY_SCANNER"]}
+
+    def test_substring_matches_base_name_ignoring_directory(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_STRIPE_API", "# Stripe")
+        # "stripe" appears only in the base name, not the directory prefix
+        result = fs_manager.search_memories_by_name("stripe").to_dict()
+        assert result == {"memories": ["ref/REF_STRIPE_API"]}
+
+    def test_case_insensitive(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", "# x")
+        assert fs_manager.search_memories_by_name("SECURITY").to_dict() == {"memories": ["ref/REF_SECURITY_SCANNER"]}
+
+    def test_fuzzy_fallback_on_typo(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", "# x")
+        # "securty" has no substring match; fuzzy fallback should still surface it
+        result = fs_manager.search_memories_by_name("securty").to_dict()
+        assert "ref/REF_SECURITY_SCANNER" in result.get("memories", [])
+
+    def test_fuzzy_disabled_returns_empty_on_typo(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", "# x")
+        assert fs_manager.search_memories_by_name("securty", fuzzy=False).to_dict() == {}
+
+    def test_no_match_returns_empty(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_STRIPE_API", "# x")
+        assert fs_manager.search_memories_by_name("nonexistentzzz").to_dict() == {}
+
+    def test_empty_query_returns_empty(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_STRIPE_API", "# x")
+        assert fs_manager.search_memories_by_name("").to_dict() == {}
+
+    def test_read_only_flagging_preserved(self, tmp_path) -> None:
+        mm = MemoryManager(serena_data_folder=tmp_path, read_only_memory_patterns=[r"ref/.*"])
+        _write(mm, "ref/REF_SECURITY_SCANNER", "# x")
+        result = mm.search_memories_by_name("security").to_dict()
+        assert result == {"read_only_memories": ["ref/REF_SECURITY_SCANNER"]}
+
+
+class TestSearchMemoriesByFrontMatter:
+    _NESTED = "---\nname: REF_ADMIN_APP_AUTH_HEADER\ndescription: Admin app JWT 401 hardening for deploy.\nmetadata:\n  type: reference\n---\n\nBody."
+    _FLAT = "---\nname: Absolute cd paths\ndescription: Always use absolute paths when deploying.\ntype: feedback\n---\n\nBody."
+    _NO_FM = "# REF_SECURITY_SCANNER — Convenely Security Scanner Rules\n\nAllowlist."
+
+    def test_matches_description(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_ADMIN_APP_AUTH_HEADER", self._NESTED)
+        _write(fs_manager, "feedback/FEEDBACK_ABS_PATHS", self._FLAT)
+        hits = fs_manager.search_memories_by_front_matter("deploy")
+        names = sorted(h["memory"] for h in hits)
+        assert names == ["feedback/FEEDBACK_ABS_PATHS", "ref/REF_ADMIN_APP_AUTH_HEADER"]
+
+    def test_matches_nested_metadata_type(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_ADMIN_APP_AUTH_HEADER", self._NESTED)
+        hits = fs_manager.search_memories_by_front_matter("reference")
+        assert [h["memory"] for h in hits] == ["ref/REF_ADMIN_APP_AUTH_HEADER"]
+
+    def test_matches_flat_type(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "feedback/FEEDBACK_ABS_PATHS", self._FLAT)
+        hits = fs_manager.search_memories_by_front_matter("feedback")
+        assert [(h["memory"], h["field"]) for h in hits] == [("feedback/FEEDBACK_ABS_PATHS", "type")]
+
+    def test_memory_without_front_matter_is_skipped(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", self._NO_FM)
+        # "scanner" is in the H1 body but there is no front matter, so it is not matched here
+        assert fs_manager.search_memories_by_front_matter("scanner") == []
+
+    def test_empty_query_returns_empty(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_ADMIN_APP_AUTH_HEADER", self._NESTED)
+        assert fs_manager.search_memories_by_front_matter("") == []
+
+    def test_read_only_flag_in_hit(self, tmp_path) -> None:
+        mm = MemoryManager(serena_data_folder=tmp_path, read_only_memory_patterns=[r"ref/.*"])
+        _write(mm, "ref/REF_ADMIN_APP_AUTH_HEADER", self._NESTED)
+        hits = mm.search_memories_by_front_matter("deploy")
+        assert hits and all(h["read_only"] for h in hits)
+
+
+class TestParseFrontMatter:
+    def test_none_when_no_leading_fence(self) -> None:
+        assert MemoryManager._parse_front_matter("# Heading\n\nBody") is None
+
+    def test_none_on_unterminated_block(self) -> None:
+        assert MemoryManager._parse_front_matter("---\nname: x\nno closing fence") is None
+
+    def test_parses_flat_and_nested(self) -> None:
+        flat = MemoryManager._parse_front_matter("---\nname: A\ntype: feedback\n---\nbody")
+        assert flat == {"name": "A", "type": "feedback"}
+        nested = MemoryManager._parse_front_matter("---\nname: B\nmetadata:\n  type: reference\n---\nbody")
+        assert nested == {"name": "B", "metadata": {"type": "reference"}}
+
+    def test_none_on_non_mapping(self) -> None:
+        # A YAML list front matter is not a mapping -> None
+        assert MemoryManager._parse_front_matter("---\n- a\n- b\n---\nbody") is None

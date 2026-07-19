@@ -6,6 +6,8 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Literal
 
+import yaml
+
 from serena.config.serena_config import (
     SerenaPaths,
 )
@@ -17,6 +19,7 @@ from .memory_reference_analysis import (
     AutofixReport,
     MemoryReferenceAnalyzer,
     ReferentialIntegrityReport,
+    compute_name_similarity,
 )
 
 log = logging.getLogger(__name__)
@@ -412,6 +415,111 @@ class MemoryManager:
             memories.extend(self._list_extra_memories())
 
         return memories
+
+    # Minimum similarity for the fuzzy name-search fallback. Lower than the reference-repair
+    # default (NAME_SIMILARITY_THRESHOLD, 0.55) because a human/LLM searching for a memory is
+    # exploring with a loose keyword, not repairing a near-miss reference.
+    NAME_SEARCH_FUZZY_THRESHOLD: float = 0.4
+
+    @staticmethod
+    def _parse_front_matter(content: str) -> dict | None:
+        r"""Parse a leading ``---\n…\n---`` YAML front-matter block.
+
+        :param content: full memory file content
+        :return: the parsed mapping, or None if there is no valid leading front-matter block
+            (a memory that opens with an H1 heading, prose, etc. has no front matter).
+        """
+        if not content.startswith("---"):
+            return None
+        # Split on the closing fence: content is "---\n<yaml>\n---\n<body>"
+        parts = content.split("\n---", 1)
+        if len(parts) < 2:
+            return None
+        yaml_block = parts[0][len("---"):]
+        try:
+            data = yaml.safe_load(yaml_block)
+        except yaml.YAMLError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def search_memories_by_name(self, query: str, fuzzy: bool = True) -> MemoriesList:
+        """Find memories whose NAME matches ``query`` — use when you know roughly what the
+        memory is called but not its exact name/prefix.
+
+        Matches case-insensitively as a substring against both the full memory name (e.g.
+        ``ref/REF_SECURITY_SCANNER``) and its base name (``REF_SECURITY_SCANNER``). If substring
+        matching finds nothing and ``fuzzy`` is set, falls back to similarity ranking so a loose
+        keyword (``security``) still surfaces close names. Read-only flagging is preserved.
+
+        :param query: the keyword or partial name to search for
+        :param fuzzy: whether to fall back to fuzzy similarity ranking when no substring matches
+        :return: a MemoriesList of matching memory names, most relevant first is not guaranteed for
+            the substring pass (names are sorted); the fuzzy fallback is similarity-ordered.
+        """
+        all_memories = self.list_memories()
+        names = all_memories.get_full_list()
+        readonly_names = set(all_memories.read_only_memories)
+        q = query.strip().lower()
+
+        result = self.MemoriesList()
+        if not q:
+            return result
+
+        matched = [n for n in names if q in n.lower() or q in n.split("/")[-1].lower()]
+        if not matched and fuzzy:
+            scored = sorted(
+                ((compute_name_similarity(query, n), n) for n in names),
+                key=lambda pair: (-pair[0], pair[1]),
+            )
+            matched = [n for score, n in scored if score >= self.NAME_SEARCH_FUZZY_THRESHOLD]
+
+        for n in matched:
+            result.add(n, is_read_only=n in readonly_names)
+        return result
+
+    def search_memories_by_front_matter(self, query: str) -> list[dict]:
+        """Find memories by what they are ABOUT — searches every field of each memory's YAML
+        front-matter (e.g. ``name``, ``description``, a flat ``type`` or a nested ``metadata``
+        block) rather than its file name.
+
+        Memories without a front-matter block are skipped silently (they contribute nothing to
+        this search — use search_memories_by_name for those).
+
+        :param query: the keyword to look for in the front matter
+        :return: a list of dicts ``{"memory": <name>, "field": <matched field>, "value": <matched
+            value>, "read_only": <bool>}`` — one entry per matched field, memory names sorted.
+        """
+        all_memories = self.list_memories()
+        readonly_names = set(all_memories.read_only_memories)
+        q = query.strip().lower()
+
+        hits: list[dict] = []
+        if not q:
+            return hits
+
+        for name in all_memories.get_full_list():
+            try:
+                content = self.load_memory(name)
+            except Exception:
+                continue
+            fm = self._parse_front_matter(content)
+            if not fm:
+                continue
+            # Search every front-matter field. Handles both shapes in use: a flat ``type:`` and a
+            # nested ``metadata:`` block (str() of the mapping still contains its values, e.g.
+            # "{'type': 'reference'}"), so a query like "reference" matches either shape.
+            for field, value in fm.items():
+                value_str = str(value)
+                if q in value_str.lower():
+                    hits.append(
+                        {
+                            "memory": name,
+                            "field": field,
+                            "value": value_str,
+                            "read_only": name in readonly_names,
+                        }
+                    )
+        return hits
 
     def delete_memory(self, name: str, is_tool_context: bool) -> str:
         name = self._sanitize_name(name)

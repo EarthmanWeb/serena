@@ -54,9 +54,59 @@ class ListMemoriesTool(Tool):
 
     def apply(self, topic: str = "") -> str:
         """
-        Lists available memories, optionally filtered by topic.
+        Lists available memories. The optional `topic` filters by directory prefix (the leading
+        path segment of a memory name): e.g. topic="ref" lists every memory under `ref/`, and
+        topic="global" lists global memories. `topic` matches a directory prefix, not a keyword
+        anywhere in the name — to search by keyword use `search_memories_by_name`, and to search by
+        what a memory is about use `search_memories_by_front_matter`.
         """
         return self._to_json(self.memory_manager.list_memories(topic).to_dict())
+
+
+class SearchMemoriesByNameTool(Tool):
+    """
+    Finds memories whose name matches a keyword.
+    """
+
+    def apply(self, query: str, fuzzy: bool = True) -> str:
+        """
+        Finds memories whose NAME matches `query`, for when you know roughly what a memory is
+        called but not its exact name or directory prefix. Matches `query` case-insensitively as a
+        substring of the memory name (both the full `dir/NAME` form and the base `NAME`). When no
+        substring matches and `fuzzy` is true, falls back to similarity ranking so a loose keyword
+        still surfaces close names. Searches names only, not memory content.
+
+        :param query: the keyword or partial name to search for
+        :param fuzzy: whether to fall back to fuzzy similarity ranking when no substring matches
+        :return: JSON with matching memory names (and read-only memory names)
+        """
+        return self._to_json(self.memory_manager.search_memories_by_name(query, fuzzy=fuzzy).to_dict())
+
+
+class SearchMemoriesByFrontMatterTool(Tool):
+    """
+    Finds memories by searching their YAML front-matter.
+    """
+
+    def apply(self, query: str, max_answer_chars: int = -1) -> str:
+        """
+        Finds memories by what they are ABOUT, searching each memory's YAML front-matter
+        (`name`, `description`, `metadata`) rather than its file name. Matches `query`
+        case-insensitively against those fields. Memories that have no front-matter block are
+        skipped (use `search_memories_by_name` to find those by name).
+
+        :param query: the keyword to look for in the front matter
+        :param max_answer_chars: if the output exceeds this many characters, a shortened summary is
+            returned instead. Defaults to the configured tool-answer limit.
+        :return: JSON list of matches, each `{memory, field, value, read_only}`
+        """
+        hits = self.memory_manager.search_memories_by_front_matter(query)
+        result = self._to_json(hits)
+
+        def _names_only() -> str:
+            return self._to_json(sorted({h["memory"] for h in hits}))
+
+        return self._limit_length(result, max_answer_chars, shortened_result_factories=[_names_only])
 
 
 class DeleteMemoryTool(Tool, ToolMarkerCanEdit):
