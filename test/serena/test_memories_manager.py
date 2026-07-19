@@ -863,3 +863,35 @@ class TestParseFrontMatter:
     def test_none_on_non_mapping(self) -> None:
         # A YAML list front matter is not a mapping -> None
         assert MemoryManager._parse_front_matter("---\n- a\n- b\n---\nbody") is None
+
+
+class TestDemoteLeadingH1:
+    def test_leading_h1_demoted_to_bold(self) -> None:
+        from serena.tools.memory_tools import _demote_leading_h1
+
+        assert _demote_leading_h1("# INDEX_FEATURES - Feature Registry\n\nbody").splitlines()[0] == "**INDEX_FEATURES - Feature Registry**"
+
+    def test_front_matter_preserved_and_h1_after_it_demoted(self) -> None:
+        from serena.tools.memory_tools import _demote_leading_h1
+
+        out = _demote_leading_h1("---\nname: X\n---\n\n# REF_X — Rules\n\nbody")
+        lines = out.splitlines()
+        assert lines[0] == "---"  # front matter untouched
+        assert "**REF_X — Rules**" in lines
+
+    def test_prose_without_heading_unchanged(self) -> None:
+        from serena.tools.memory_tools import _demote_leading_h1
+
+        assert _demote_leading_h1("Just prose, no heading") == "Just prose, no heading"
+
+    def test_non_h1_heading_untouched(self) -> None:
+        from serena.tools.memory_tools import _demote_leading_h1
+
+        assert _demote_leading_h1("## sub\n\nbody").splitlines()[0] == "## sub"
+
+    def test_only_first_heading_demoted(self) -> None:
+        from serena.tools.memory_tools import _demote_leading_h1
+
+        out = _demote_leading_h1("# Title\n\n## Section\n\n# Later top-level\n").splitlines()
+        assert out[0] == "**Title**"
+        assert "# Later top-level" in out  # deeper/later headings preserved

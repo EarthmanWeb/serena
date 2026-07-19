@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Literal
 
 from serena.tools import Tool, ToolMarkerCanEdit
@@ -47,6 +48,33 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit):
         return self.memory_manager.save_memory(memory_name, content, is_tool_context=True)
 
 
+def _demote_leading_h1(content: str) -> str:
+    """Demote a memory's leading top-level ``# `` heading to bold text.
+
+    Claude Code disables structured tool output (see the claude-code context), so memory content is
+    returned as raw markdown. Some clients (e.g. the VS Code extension) then render a leading H1 as an
+    oversized title block. Demoting only the first top-level heading to ``**bold**`` keeps the title
+    text and all deeper headings intact while avoiding that giant-lettering rendering. Front matter
+    and the body are otherwise untouched.
+    """
+    lines = content.split("\n")
+    idx = 0
+    # Skip a leading YAML front-matter block, if present.
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                idx = i + 1
+                break
+    # Advance to the first non-blank content line.
+    while idx < len(lines) and lines[idx].strip() == "":
+        idx += 1
+    if idx < len(lines):
+        m = re.match(r"# (?!#)(.*)$", lines[idx])
+        if m:
+            lines[idx] = f"**{m.group(1).strip()}**"
+    return "\n".join(lines)
+
+
 class ReadMemoryTool(Tool):
     """
     Reads the content of a memory file.
@@ -56,7 +84,7 @@ class ReadMemoryTool(Tool):
         """
         Use to read a memory that is likely to be relevant to the current task, inferring relevance e.g. from the name.
         """
-        return self.memory_manager.load_memory(memory_name)
+        return _demote_leading_h1(self.memory_manager.load_memory(memory_name))
 
 
 class ListMemoriesTool(Tool):
