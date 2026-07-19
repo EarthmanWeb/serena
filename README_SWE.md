@@ -71,3 +71,123 @@ read-only memory folders, correct handling of hidden project folders, more resil
 understanding across languages, and clearer troubleshooting. The goal throughout is to make the
 assistant find what it already knows, understand code without breaking on edge cases, and stay
 dependable inside real, messy projects.
+
+---
+
+## Using the configurable additions
+
+This section is for whoever sets up or operates Serena. Settings live in three places:
+
+- **Command-line flags** — passed when the MCP server is started.
+- **Project config** — `.serena/project.yml` in the project.
+- **Global config** — `serena_config.yml` in the Serena home folder (`~/.serena`).
+
+### Running it directly (without the SWE plugin)
+
+The SWE plugin launches this fork for you, but you can also run it on its own from any MCP client.
+The key detail is to install from **this fork on the `swe` branch** — `EarthmanWeb/serena`, not the
+upstream `oraios/serena` — so you get the additions described above:
+
+```
+uvx --from "git+https://github.com/EarthmanWeb/serena@swe" \
+  serena start-mcp-server \
+  --context claude-code \
+  --project ./ \
+  --memory-path "./.serena/memories,/shared/team-memories:ro"
+```
+
+`uvx` fetches and runs the fork in one step; `serena start-mcp-server` is the command that speaks the
+MCP protocol to your client. The example above also turns on two of the fork's memory features —
+multiple memory folders and a read-only shared folder — via `--memory-path`.
+
+To wire it into an MCP client's config instead of running by hand, use the same command as the
+server's launch command:
+
+```json
+{
+  "mcpServers": {
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from", "git+https://github.com/EarthmanWeb/serena@swe",
+        "serena", "start-mcp-server",
+        "--context", "claude-code",
+        "--project", "./",
+        "--memory-path", "./.serena/memories,/shared/team-memories:ro"
+      ]
+    }
+  }
+}
+```
+
+Once running, the `search_memories_by_name` and `search_memories_by_front_matter` tools appear
+automatically alongside Serena's standard tools — no extra setup.
+
+### Memory search (the two new tools)
+
+Nothing to configure — the tools are always available to the assistant:
+
+- **`search_memories_by_name`** — give it a keyword; it matches memory titles and, if nothing matches
+  exactly, falls back to close/fuzzy matches. Turn the fuzzy fallback off with `fuzzy=false` when you
+  want exact-substring results only.
+- **`search_memories_by_front_matter`** — give it a keyword; it matches the summary block at the top
+  of each memory. Only memories that have such a block are searched, so keeping that block filled in
+  (see below) is what makes this tool useful.
+
+For the front-matter search to find things, memories should begin with a short block like:
+
+```
+---
+name: <short title>
+description: <one sentence about what this note is for>
+metadata:
+  type: <category>
+---
+```
+
+New memories are prompted to include this automatically; existing ones can be backfilled in bulk.
+
+### Multiple and read-only memory folders
+
+Set these with the **`--memory-path`** flag when launching the server. Give it a comma-separated list
+of folders:
+
+- The **first** folder is the primary one — new memories and edits are written there.
+- **Additional** folders are extra sources that are also searched and read.
+- Add **`:ro`** to any extra folder to make it read-only (read but never written).
+
+```
+--memory-path "./.serena/memories,/shared/team-memories:ro"
+```
+
+This is how you share a common knowledge base across projects while protecting it from accidental
+edits. Paths can be absolute or relative to the project root.
+
+You can also mark specific memories (not whole folders) as read-only or hidden from within
+`.serena/project.yml`, using regular-expression patterns:
+
+- **`read_only_memory_patterns`** — memories matching these can be read but not changed.
+- **`ignored_memory_patterns`** — memories matching these are hidden from listing/search entirely.
+
+### Hidden (dot) folders
+
+By default Serena skips folders whose names start with a dot. If your project keeps real code in such
+a folder (for example `.github` workflows), set this in `.serena/project.yml`:
+
+```
+ignore_all_dot_files: false
+```
+
+With it off, dotted folders are indexed like any other. (`.git` is always skipped regardless.)
+
+### Troubleshooting: see tool inputs and outputs
+
+To diagnose why a step behaved unexpectedly, enable this in the global `serena_config.yml`:
+
+```
+debug_tool_calls: true
+```
+
+Each tool response then includes exactly what was passed in and what came back — invaluable when a
+symbol lookup or edit doesn't do what you expected. Leave it off in normal use, as it makes responses
+longer.
