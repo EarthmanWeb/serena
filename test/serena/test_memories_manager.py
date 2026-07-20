@@ -865,33 +865,46 @@ class TestParseFrontMatter:
         assert MemoryManager._parse_front_matter("---\n- a\n- b\n---\nbody") is None
 
 
-class TestDemoteLeadingH1:
+class TestCleanMemoryHeader:
     def test_leading_h1_demoted_to_bold(self) -> None:
-        from serena.tools.memory_tools import _demote_leading_h1
+        from serena.tools.memory_tools import _clean_memory_header
 
-        assert _demote_leading_h1("# INDEX_FEATURES - Feature Registry\n\nbody").splitlines()[0] == "**INDEX_FEATURES - Feature Registry**"
+        assert _clean_memory_header("# INDEX_FEATURES - Feature Registry\n\nbody").splitlines()[0] == "**INDEX_FEATURES - Feature Registry**"
 
-    def test_front_matter_preserved_and_h1_after_it_demoted(self) -> None:
-        from serena.tools.memory_tools import _demote_leading_h1
+    def test_front_matter_collapsed_to_name(self) -> None:
+        from serena.tools.memory_tools import _clean_memory_header
 
-        out = _demote_leading_h1("---\nname: X\n---\n\n# REF_X — Rules\n\nbody")
+        out = _clean_memory_header("---\nname: SPEC_X\nmetadata:\n  type: reference\n---\n\n# REF_X — Rules\n\nbody")
         lines = out.splitlines()
-        assert lines[0] == "---"  # front matter untouched
-        assert "**REF_X — Rules**" in lines
+        # The raw --- fences and metadata are gone; the name becomes a bold title.
+        assert lines[0] == "**SPEC_X**"
+        assert "---" not in lines
+        assert "metadata:" not in out
+        # Body (including its own H1) is preserved intact after the title.
+        assert "# REF_X — Rules" in out
+        assert "body" in out
+
+    def test_front_matter_without_name_falls_back_to_h1(self) -> None:
+        from serena.tools.memory_tools import _clean_memory_header
+
+        out = _clean_memory_header("---\ndescription: no name here\n---\n\n# REF_X — Rules\n\nbody")
+        lines = out.splitlines()
+        assert lines[0] == "**REF_X — Rules**"
+        assert "---" not in lines
 
     def test_prose_without_heading_unchanged(self) -> None:
-        from serena.tools.memory_tools import _demote_leading_h1
+        from serena.tools.memory_tools import _clean_memory_header
 
-        assert _demote_leading_h1("Just prose, no heading") == "Just prose, no heading"
+        assert _clean_memory_header("Just prose, no heading") == "Just prose, no heading"
 
     def test_non_h1_heading_untouched(self) -> None:
-        from serena.tools.memory_tools import _demote_leading_h1
+        from serena.tools.memory_tools import _clean_memory_header
 
-        assert _demote_leading_h1("## sub\n\nbody").splitlines()[0] == "## sub"
+        assert _clean_memory_header("## sub\n\nbody").splitlines()[0] == "## sub"
 
     def test_only_first_heading_demoted(self) -> None:
-        from serena.tools.memory_tools import _demote_leading_h1
+        from serena.tools.memory_tools import _clean_memory_header
 
-        out = _demote_leading_h1("# Title\n\n## Section\n\n# Later top-level\n").splitlines()
+        out = _clean_memory_header("# Title\n\n## Section\n\n# Later top-level\n").splitlines()
         assert out[0] == "**Title**"
         assert "# Later top-level" in out  # deeper/later headings preserved

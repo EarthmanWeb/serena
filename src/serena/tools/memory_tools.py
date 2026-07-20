@@ -48,24 +48,57 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit):
         return self.memory_manager.save_memory(memory_name, content, is_tool_context=True)
 
 
-def _demote_leading_h1(content: str) -> str:
-    """Demote a memory's leading top-level ``# `` heading to bold text.
+def _clean_memory_header(content: str) -> str:
+    """Make a memory's leading title render cleanly in raw-markdown clients.
 
     Claude Code disables structured tool output (see the claude-code context), so memory content is
-    returned as raw markdown. Some clients (e.g. the VS Code extension) then render a leading H1 as an
-    oversized title block. Demoting only the first top-level heading to ``**bold**`` keeps the title
-    text and all deeper headings intact while avoiding that giant-lettering rendering. Front matter
-    and the body are otherwise untouched.
+    returned as raw markdown. Two things render badly in some clients (e.g. the VS Code extension):
+
+    1. A leading YAML front-matter block prints its raw ``---`` fences and metadata noise, so a read
+       opens with ``---\\nname: SPEC_X\\n...\\n---`` instead of a readable title. We COLLAPSE that
+       whole block to a single ``**<name>**`` line (from its ``name:`` field), dropping the fences
+       and metadata. If the block has no ``name:``, we fall back to the body's leading H1 text; if
+       there is none either, the block is simply removed.
+    2. A leading top-level ``# `` heading renders as an oversized title block. We demote the first
+       one to ``**bold**``.
+
+    Deeper headings and the body are otherwise untouched.
     """
     lines = content.split("\n")
-    idx = 0
-    # Skip a leading YAML front-matter block, if present.
+
+    # 1. Collapse a leading YAML front-matter block to a bold name line.
+    fm_name = ""
+    body_start = 0
     if lines and lines[0].strip() == "---":
         for i in range(1, len(lines)):
             if lines[i].strip() == "---":
-                idx = i + 1
+                # Extract the `name:` field from within the front matter.
+                for fm_line in lines[1:i]:
+                    m = re.match(r"\s*name\s*:\s*(.+?)\s*$", fm_line)
+                    if m:
+                        fm_name = m.group(1).strip().strip("\"'")
+                        break
+                body_start = i + 1
                 break
-    # Advance to the first non-blank content line.
+
+    if body_start:
+        # Everything after the closing fence is the body.
+        body_lines = lines[body_start:]
+        # Drop leading blank lines so the title sits at the top.
+        while body_lines and body_lines[0].strip() == "":
+            body_lines.pop(0)
+        # If the front matter had no name, fall back to a leading H1's text.
+        if not fm_name and body_lines:
+            hm = re.match(r"# (?!#)(.*)$", body_lines[0])
+            if hm:
+                fm_name = hm.group(1).strip()
+                body_lines.pop(0)
+                while body_lines and body_lines[0].strip() == "":
+                    body_lines.pop(0)
+        lines = ([f"**{fm_name}**", ""] if fm_name else []) + body_lines
+
+    # 2. Demote a leading top-level H1 (when there was no front-matter title above).
+    idx = 0
     while idx < len(lines) and lines[idx].strip() == "":
         idx += 1
     if idx < len(lines):
@@ -84,7 +117,7 @@ class ReadMemoryTool(Tool):
         """
         Use to read a memory that is likely to be relevant to the current task, inferring relevance e.g. from the name.
         """
-        return _demote_leading_h1(self.memory_manager.load_memory(memory_name))
+        return _clean_memory_header(self.memory_manager.load_memory(memory_name))
 
 
 class ListMemoriesTool(Tool):
