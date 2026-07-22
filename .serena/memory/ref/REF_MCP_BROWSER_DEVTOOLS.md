@@ -7,12 +7,16 @@ metadata:
 
 # REF_MCP_BROWSER_DEVTOOLS - Browser DevTools MCP Reference
 
-Browser DevTools MCP (`@ironbee-ai/devtools`) provides Playwright-powered browser
-control for debugging, testing, and exploration.
+Browser DevTools MCP provides Playwright-powered browser
+control for debugging, testing, and exploration. Distributed as a PRIVATE vendor fork
+(`EarthmanWeb/em-devtools`, git-only, NOT on npm): `.mcp.json` runs `bash`
+`convenely_scaffold_base/scripts/start-em-devtools-mcp.sh`, which `npx`-installs it from
+`git+https://$EM_MCP_TOKEN@github.com/EarthmanWeb/em-devtools#$EM_DEVTOOLS_REF` (bin
+`em-browser-devtools-mcp`). `EM_MCP_TOKEN` (GitHub PAT, Contents:Read) required; fail-loud if unset.
 
 **MCP server name:** `browser-devtools` (registered in `.mcp.json`)
 **Tool namespace:** `mcp__browser-devtools__*`
-**Scenario storage:** `.ironbee-devtools/scenarios.json`
+**Scenario storage:** `.em-devtools/scenarios.json`
 
 ---
 
@@ -97,7 +101,7 @@ session, expiring the previous one).
 
 1. **First agent** runs a login scenario. After successful login, the scenario
    saves browser state (cookies + localStorage) via `storageState()` to an auth
-   cache file (e.g. `.ironbee-devtools/.auth/{siteKey}.json`).
+   cache file (e.g. `.em-devtools/.auth/{siteKey}.json`).
 2. **Subsequent agents** run the same login scenario. The scenario detects saved
    state, restores cookies via `page.context().addCookies()`, verifies the
    session is still valid, and returns early — no new login needed.
@@ -112,7 +116,7 @@ session, expiring the previous one).
 - ALWAYS use login scenarios — NEVER manually navigate to login pages.
 - NEVER login as the same user in parallel without session reuse.
 - One login, many consumers — first agent creates session, others reuse it.
-- Gitignore auth cache files (`.ironbee-devtools/.auth/`).
+- Gitignore auth cache files (`.em-devtools/.auth/`).
 
 ### Login Scenario Template
 
@@ -121,7 +125,7 @@ Follow this pattern when creating a new login scenario for a project:
 ```javascript
 // Template: adapt URLs, selectors, and credentials to your project
 const siteKey = 'my-app-local';
-const authDir = '.ironbee-devtools/.auth';
+const authDir = '.em-devtools/.auth';
 const authFile = `${authDir}/${siteKey}.json`;
 const loginUrl = 'https://your-app.local/login';
 const dashboardIndicator = 'Dashboard'; // text visible after successful login
