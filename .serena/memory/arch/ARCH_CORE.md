@@ -1,3 +1,10 @@
+---
+name: Serena Project Core
+description: Graph-root architecture map — source layout + project-wide invariants; entry point for memory discovery.
+metadata:
+  type: architecture
+---
+
 # Serena — Project Core
 
 Serena is an MCP-based "IDE for coding agents": semantic code retrieval/editing/refactoring tools driven by language servers.
@@ -26,4 +33,5 @@ Serena is an MCP-based "IDE for coding agents": semantic code retrieval/editing/
 - Python: `>=3.11, <3.15`. Dependencies are exact-pinned in `pyproject.toml` (uvx installs from git, lockfile ignored — pin exactly).
 - Entry points: `serena` → `serena.cli:top_level`; `serena-hooks` → `serena.hooks:hook_commands`.
 - Per-project state lives under `<project>/.serena/` (config + `memories/` as `.md` files).
-- See `mem:tech_stack`, `mem:suggested_commands`, `mem:conventions`, `mem:task_completion`.
+- Adding a new language: see `mem:ref/REF_ADDING_LANGUAGE_SUPPORT`.
+- Dev conventions and commands: see `mem:feature/FEATURE_DEV_STANDARDS`; test/verification steps: `mem:feature/FEATURE_TESTS`.
