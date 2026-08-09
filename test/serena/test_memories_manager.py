@@ -908,3 +908,190 @@ class TestCleanMemoryHeader:
         out = _clean_memory_header("# Title\n\n## Section\n\n# Later top-level\n").splitlines()
         assert out[0] == "**Title**"
         assert "# Later top-level" in out  # deeper/later headings preserved
+
+
+# ---------------------------------------------------------------------------
+# Front-matter search robustness (stacked blocks, tokenized OR queries,
+# ranking, metadata flattening, zero-hit fallbacks). Regression source: a real
+# project memory carried TWO stacked leading front-matter blocks after an
+# edit_memory prepend; search only ever saw the first (stale) block while
+# read_memory's header-collapse displayed the second — the fact looked
+# indexed but was unfindable.
+# ---------------------------------------------------------------------------
+
+_FM_OLD = (
+    "---\n"
+    "name: Dev Environment Infrastructure (DevContainer)\n"
+    "description: Dev environment infrastructure feature memory\n"
+    "metadata:\n"
+    "  type: feature\n"
+    "---\n"
+)
+_FM_NEW = (
+    "---\n"
+    "name: Dev Environment Infrastructure (DevContainer)\n"
+    "description: Local devcontainer infra and the standardized local WordPress admin login credentials (claude_admin password preset).\n"
+    "metadata:\n"
+    "  type: feature\n"
+    "  keywords: [claude_admin, wp login credentials, local admin password]\n"
+    "---\n"
+)
+_FM_BODY = "\n# FEATURE_DEVCONTAINER\n\nBody.\n"
+
+
+def _leading_block_count(content: str) -> int:
+    """Count consecutive leading ``---``-fenced blocks (mapping or not)."""
+    n = 0
+    rest = content
+    while rest.startswith("---"):
+        head, sep, tail = rest.partition("\n---")
+        if not sep:
+            break
+        n += 1
+        rest = tail.lstrip("\n")
+    return n
+
+
+class TestParseFrontMatterStackedBlocks:
+    def test_stacked_blocks_merge_with_later_block_winning(self) -> None:
+        fm = MemoryManager._parse_front_matter(_FM_OLD + _FM_NEW + _FM_BODY)
+        assert fm is not None
+        assert "claude_admin" in fm["description"]
+        assert "claude_admin" in str(fm["metadata"].get("keywords", []))
+
+    def test_invalid_first_block_falls_through_to_valid_second(self) -> None:
+        bad = "---\n- just\n- a list\n---\n"
+        fm = MemoryManager._parse_front_matter(bad + _FM_NEW + _FM_BODY)
+        assert fm is not None
+        assert "claude_admin" in fm["description"]
+
+    def test_single_block_behavior_unchanged(self) -> None:
+        fm = MemoryManager._parse_front_matter(_FM_NEW + _FM_BODY)
+        assert fm is not None
+        assert fm["metadata"]["type"] == "feature"
+
+    def test_body_horizontal_rule_not_consumed_as_block(self) -> None:
+        # a body that OPENS with a markdown horizontal rule must not be treated
+        # as (or merged into) front matter
+        content = _FM_NEW + "---\nJust prose after an hr\n---\nmore prose\n"
+        fm = MemoryManager._parse_front_matter(content)
+        assert fm is not None
+        assert fm["metadata"]["type"] == "feature"
+        assert "prose" not in str(fm)
+
+
+class TestSearchMemoriesByFrontMatterRelevance:
+    def test_stacked_blocks_are_searchable(self, fs_manager: MemoryManager) -> None:
+        # THE original repro: fact lives in the second stacked block
+        _write(fs_manager, "feature/FEATURE_DEVCONTAINER", _FM_OLD + _FM_NEW + _FM_BODY)
+        hits = fs_manager.search_memories_by_front_matter("claude_admin")
+        assert any(h["memory"] == "feature/FEATURE_DEVCONTAINER" for h in hits)
+
+    def test_multi_word_query_matches_on_subset_of_terms(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "feature/FEATURE_DEVCONTAINER", _FM_NEW + _FM_BODY)
+        hits = fs_manager.search_memories_by_front_matter("standardized local WordPress admin login credentials")
+        assert any(h["memory"] == "feature/FEATURE_DEVCONTAINER" for h in hits)
+
+    def test_multi_word_ranking_orders_best_match_first(self, fs_manager: MemoryManager) -> None:
+        best = "---\nname: A\ndescription: local wordpress admin credentials preset\nmetadata:\n  type: feature\n---\nBody."
+        weak = "---\nname: B\ndescription: wordpress theme build notes\nmetadata:\n  type: reference\n---\nBody."
+        _write(fs_manager, "feature/A", best)
+        _write(fs_manager, "ref/B", weak)
+        hits = fs_manager.search_memories_by_front_matter("local wordpress admin credentials")
+        assert hits, "expected hits for a partially-matching multi-word query"
+        assert hits[0]["memory"] == "feature/A"
+        by_memory: dict[str, int] = {}
+        for h in hits:
+            by_memory[h["memory"]] = max(by_memory.get(h["memory"], 0), h["score"])
+        assert by_memory["feature/A"] > by_memory["ref/B"]
+
+    def test_metadata_keywords_reported_with_dotted_field(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "feature/FEATURE_DEVCONTAINER", _FM_NEW + _FM_BODY)
+        hits = fs_manager.search_memories_by_front_matter("claude_admin")
+        assert any(h["field"] == "metadata.keywords" for h in hits)
+
+    def test_underscore_query_matches_space_separated_text(self, fs_manager: MemoryManager) -> None:
+        content = "---\nname: X\ndescription: the claude admin local login flow\nmetadata:\n  type: reference\n---\nBody."
+        _write(fs_manager, "ref/X", content)
+        hits = fs_manager.search_memories_by_front_matter("claude_admin")
+        assert any(h["memory"] == "ref/X" for h in hits)
+
+
+class TestSearchMemoriesByNameRelevance:
+    def test_multi_term_query_matches_by_or_terms(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_LOCAL_ADMIN_CREDENTIALS", "# creds")
+        result = fs_manager.search_memories_by_name(
+            "local admin password preset credentials login demo", fuzzy=False
+        ).to_dict()
+        assert "ref/REF_LOCAL_ADMIN_CREDENTIALS" in result.get("memories", [])
+
+    def test_underscore_query_tokenized(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "ref/REF_LOCAL_ADMIN_CREDENTIALS", "# creds")
+        result = fs_manager.search_memories_by_name("claude_admin", fuzzy=False).to_dict()
+        assert "ref/REF_LOCAL_ADMIN_CREDENTIALS" in result.get("memories", [])
+
+    def test_fuzzy_fallback_is_capped(self, fs_manager: MemoryManager) -> None:
+        for i in range(15):
+            _write(fs_manager, f"t{i:02d}/login", "# x")
+        result = fs_manager.search_memories_by_name("loginn").to_dict()
+        found = result.get("memories", [])
+        assert 0 < len(found) <= MemoryManager.NAME_SEARCH_MAX_RESULTS
+
+
+class TestStackedFrontMatterNormalization:
+    def test_save_memory_collapses_stacked_blocks(self, fs_manager: MemoryManager) -> None:
+        _write(fs_manager, "feature/X", _FM_OLD + _FM_NEW + _FM_BODY)
+        raw = fs_manager.load_memory("feature/X")
+        assert _leading_block_count(raw) == 1
+        fm = MemoryManager._parse_front_matter(raw)
+        assert fm is not None and "claude_admin" in fm["description"]
+        assert "# FEATURE_DEVCONTAINER" in raw
+
+    def test_save_memory_single_block_is_byte_preserved(self, fs_manager: MemoryManager) -> None:
+        content = _FM_NEW + _FM_BODY
+        _write(fs_manager, "feature/Y", content)
+        assert fs_manager.load_memory("feature/Y") == content
+
+    def test_edit_memory_normalizes_stacked_blocks(self, fs_manager: MemoryManager) -> None:
+        # simulate the real-world failure: an edit inserts a second front-matter
+        # block after the existing one
+        _write(fs_manager, "feature/Z", _FM_OLD + _FM_BODY)
+        fs_manager.edit_memory(
+            "feature/Z",
+            needle="\n# FEATURE_DEVCONTAINER",
+            repl="\n" + _FM_NEW + "\n# FEATURE_DEVCONTAINER",
+            mode="literal",
+            allow_multiple_occurrences=False,
+            is_tool_context=False,
+        )
+        raw = fs_manager.load_memory("feature/Z")
+        assert _leading_block_count(raw) == 1
+        fm = MemoryManager._parse_front_matter(raw)
+        assert fm is not None and "claude_admin" in fm["description"]
+
+
+class TestSearchFallbacks:
+    def test_name_zero_hits_falls_back_to_front_matter(self, fs_manager: MemoryManager) -> None:
+        from serena.tools.memory_tools import search_by_name_with_fallback
+
+        _write(fs_manager, "feature/FEATURE_DEVCONTAINER", _FM_NEW + _FM_BODY)
+        out = search_by_name_with_fallback(fs_manager, "claude_admin")
+        fallback = out.get("front_matter_fallback", [])
+        assert any(h["memory"] == "feature/FEATURE_DEVCONTAINER" for h in fallback)
+
+    def test_front_matter_zero_hits_falls_back_to_name(self, fs_manager: MemoryManager) -> None:
+        from serena.tools.memory_tools import search_by_front_matter_with_fallback
+
+        _write(fs_manager, "ref/REF_SECURITY_SCANNER", "# REF_SECURITY_SCANNER\n\nno front matter")
+        out = search_by_front_matter_with_fallback(fs_manager, "security")
+        assert out["name_fallback"]["memories"] == ["ref/REF_SECURITY_SCANNER"]
+
+    def test_both_empty_returns_empty(self, fs_manager: MemoryManager) -> None:
+        from serena.tools.memory_tools import (
+            search_by_front_matter_with_fallback,
+            search_by_name_with_fallback,
+        )
+
+        _write(fs_manager, "ref/X", _FM_NEW + _FM_BODY)
+        assert search_by_name_with_fallback(fs_manager, "zzz_nothing_qqq", fuzzy=False) == {}
+        assert search_by_front_matter_with_fallback(fs_manager, "zzz_nothing_qqq") == []
