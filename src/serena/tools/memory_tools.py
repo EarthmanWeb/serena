@@ -9,18 +9,24 @@ log = logging.getLogger(__name__)
 
 
 def search_by_name_with_fallback(memory_manager: MemoryManager, query: str, fuzzy: bool = True) -> dict:
-    """Name search with an automatic front-matter fallback on zero hits.
+    """Name search with an automatic front-matter fallback when no name contains the query.
 
-    A fact that lives only in a memory's front matter (description/keywords) is unreachable
-    by name search; chaining the searches means a zero-hit name query still surfaces it
-    instead of returning an empty result the caller may misread as "no such memory".
+    Priority: term/substring name matches > front-matter hits > fuzzy name similarity. A fact
+    that lives only in a memory's front matter (description/keywords) is unreachable by name
+    search, and fuzzy name guesses would mask it — so front matter is consulted BEFORE the
+    fuzzy pass, and a zero-hit query returns the front-matter hits rather than an empty
+    result the caller may misread as "no such memory".
     """
-    result = memory_manager.search_memories_by_name(query, fuzzy=fuzzy).to_dict()
+    result = memory_manager.search_memories_by_name(query, fuzzy=False).to_dict()
     if result:
         return result
     front_matter_hits = memory_manager.search_memories_by_front_matter(query)
     if front_matter_hits:
         return {"front_matter_fallback": front_matter_hits}
+    if fuzzy:
+        fuzzy_result = memory_manager.search_memories_by_name(query, fuzzy=True).to_dict()
+        if fuzzy_result:
+            return fuzzy_result
     return {}
 
 
