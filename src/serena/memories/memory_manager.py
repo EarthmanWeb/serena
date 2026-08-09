@@ -292,6 +292,7 @@ class MemoryManager:
         memory_file_path = self._find_existing_memory(name) or self.get_memory_file_path(name)
         if self._is_readonly(memory_file_path):
             return f"Cannot write memory '{name}': it is in a read-only path. Do not retry this operation."
+        content = self._normalize_stacked_front_matter(content)
         with open(memory_file_path, "w", encoding=self._encoding) as f:
             f.write(content)
         return f"Memory {name} written."
@@ -421,40 +422,134 @@ class MemoryManager:
     # exploring with a loose keyword, not repairing a near-miss reference.
     NAME_SEARCH_FUZZY_THRESHOLD: float = 0.4
 
+    # Minimum length for a tokenized query term; single characters are noise.
+    QUERY_TERM_MIN_LENGTH: int = 2
+    # Cap for ranked multi-term name matches and the fuzzy name-search fallback. An uncapped
+    # fuzzy pass over a large memory set returns a firehose (observed: 48 unranked hits).
+    NAME_SEARCH_MAX_RESULTS: int = 10
+
     @staticmethod
-    def _parse_front_matter(content: str) -> dict | None:
-        r"""Parse a leading ``---\n…\n---`` YAML front-matter block.
+    def _split_front_matter_blocks(content: str) -> tuple[list[dict], str, int]:
+        r"""Split ALL consecutive leading ``---``-fenced front-matter blocks off ``content``.
+
+        Stacked blocks arise when an edit inserts a second front-matter block instead of
+        replacing the first; parsing only the first block makes the newer fields invisible
+        to search. The first fenced block is always consumed (even if it is not a YAML
+        mapping); subsequent fenced sections are consumed ONLY if they parse to a mapping,
+        so a markdown horizontal rule at the start of the body is never swallowed.
 
         :param content: full memory file content
-        :return: the parsed mapping, or None if there is no valid leading front-matter block
-            (a memory that opens with an H1 heading, prose, etc. has no front matter).
+        :return: (parsed mapping blocks in order, remaining body, number of blocks consumed)
         """
-        if not content.startswith("---"):
+        blocks: list[dict] = []
+        rest = content
+        n_consumed = 0
+        while rest.startswith("---"):
+            head, sep, tail = rest.partition("\n---")
+            if not sep:
+                break
+            try:
+                data = yaml.safe_load(head[len("---") :])
+            except yaml.YAMLError:
+                data = None
+            is_mapping = isinstance(data, dict)
+            if n_consumed > 0 and not is_mapping:
+                break
+            if is_mapping:
+                blocks.append(data)
+            n_consumed += 1
+            rest = tail.lstrip("\n")
+        return blocks, rest, n_consumed
+
+    @staticmethod
+    def _parse_front_matter(content: str) -> dict | None:
+        r"""Parse the leading ``---\n…\n---`` YAML front-matter block(s).
+
+        Multiple stacked leading blocks are merged: later blocks win on key conflicts, and
+        ``metadata`` mappings are merged shallowly (so an appended corrective block fully
+        surfaces in search).
+
+        :param content: full memory file content
+        :return: the (merged) parsed mapping, or None if there is no valid leading
+            front-matter block (a memory that opens with an H1 heading, prose, etc.).
+        """
+        blocks, _body, _n_consumed = MemoryManager._split_front_matter_blocks(content)
+        if not blocks:
             return None
-        # Split on the closing fence: content is "---\n<yaml>\n---\n<body>"
-        parts = content.split("\n---", 1)
-        if len(parts) < 2:
-            return None
-        yaml_block = parts[0][len("---"):]
-        try:
-            data = yaml.safe_load(yaml_block)
-        except yaml.YAMLError:
-            return None
-        return data if isinstance(data, dict) else None
+        merged: dict = {}
+        for block in blocks:
+            for key, value in block.items():
+                if key == "metadata" and isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = value
+        return merged
+
+    def _normalize_stacked_front_matter(self, content: str) -> str:
+        """Collapse multiple stacked leading front-matter blocks into ONE merged block.
+
+        Content with zero or one leading block is returned byte-identical. With two or
+        more, the blocks are merged (later wins; ``metadata`` merged shallowly) and
+        re-serialized as a single canonical block above the untouched body.
+        """
+        _blocks, body, n_consumed = self._split_front_matter_blocks(content)
+        if n_consumed <= 1:
+            return content
+        merged = self._parse_front_matter(content)
+        if merged is None:
+            return content
+        fm_text = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, default_flow_style=None).strip()
+        return f"---\n{fm_text}\n---\n\n{body}"
+
+    @staticmethod
+    def _query_terms(query: str) -> list[str]:
+        """Tokenize ``query`` on non-alphanumerics (space, ``_``, ``-``, …) into deduplicated
+        lowercase terms, dropping tokens shorter than :attr:`QUERY_TERM_MIN_LENGTH`. This lets
+        ``claude_admin`` match ``claude admin`` and multi-word queries match on a subset of terms.
+        """
+        q = query.strip().lower()
+        seen: set[str] = set()
+        terms: list[str] = []
+        for token in re.split(r"[^a-z0-9]+", q):
+            if len(token) >= MemoryManager.QUERY_TERM_MIN_LENGTH and token not in seen:
+                seen.add(token)
+                terms.append(token)
+        return terms
+
+    @staticmethod
+    def _flatten_front_matter(fm: dict, prefix: str = "") -> list[tuple[str, str]]:
+        """Flatten a front-matter mapping to ``(dotted_field, value_string)`` pairs, e.g.
+        ``metadata.keywords`` -> ``"claude_admin, wp login credentials"``. Lists are joined so
+        each element is substring-searchable; nested mappings recurse with a dotted prefix.
+        """
+        fields: list[tuple[str, str]] = []
+        for key, value in fm.items():
+            dotted = f"{prefix}{key}"
+            if isinstance(value, dict):
+                fields.extend(MemoryManager._flatten_front_matter(value, dotted + "."))
+            elif isinstance(value, (list, tuple)):
+                fields.append((dotted, ", ".join(str(item) for item in value)))
+            else:
+                fields.append((dotted, str(value)))
+        return fields
 
     def search_memories_by_name(self, query: str, fuzzy: bool = True) -> MemoriesList:
         """Find memories whose NAME matches ``query`` — use when you know roughly what the
         memory is called but not its exact name/prefix.
 
-        Matches case-insensitively as a substring against both the full memory name (e.g.
-        ``ref/REF_SECURITY_SCANNER``) and its base name (``REF_SECURITY_SCANNER``). If substring
-        matching finds nothing and ``fuzzy`` is set, falls back to similarity ranking so a loose
-        keyword (``security``) still surfaces close names. Read-only flagging is preserved.
+        The query is tokenized on non-alphanumerics (so ``claude_admin`` matches names
+        containing ``claude`` OR ``admin``); multi-term queries match on ANY term, ranked by
+        the number of terms matched (full-query substring outranks all), and are capped at
+        :attr:`NAME_SEARCH_MAX_RESULTS`. A single-term query keeps the plain case-insensitive
+        substring behavior against both the full name (``ref/REF_SECURITY_SCANNER``) and its
+        base name, uncapped. If nothing matches and ``fuzzy`` is set, falls back to similarity
+        ranking (also capped) so a loose keyword still surfaces close names. Read-only
+        flagging is preserved.
 
         :param query: the keyword or partial name to search for
         :param fuzzy: whether to fall back to fuzzy similarity ranking when no substring matches
-        :return: a MemoriesList of matching memory names, most relevant first is not guaranteed for
-            the substring pass (names are sorted); the fuzzy fallback is similarity-ordered.
+        :return: a MemoriesList of matching memory names (output is name-sorted; ranking is
+            applied for selection/capping, not output order)
         """
         all_memories = self.list_memories()
         names = all_memories.get_full_list()
@@ -465,13 +560,29 @@ class MemoryManager:
         if not q:
             return result
 
-        matched = [n for n in names if q in n.lower() or q in n.split("/")[-1].lower()]
+        terms = self._query_terms(query)
+        scored_matches: list[tuple[int, str]] = []
+        for n in names:
+            n_lower = n.lower()
+            if q in n_lower or q in n.split("/")[-1].lower():
+                score = len(terms) + 1  # full-query substring outranks any term subset
+            else:
+                score = sum(1 for t in terms if t in n_lower)
+            if score > 0:
+                scored_matches.append((score, n))
+
+        if len(terms) > 1:
+            scored_matches.sort(key=lambda pair: (-pair[0], pair[1]))
+            matched = [n for _score, n in scored_matches[: self.NAME_SEARCH_MAX_RESULTS]]
+        else:
+            matched = [n for _score, n in scored_matches]
+
         if not matched and fuzzy:
             scored = sorted(
                 ((compute_name_similarity(query, n), n) for n in names),
                 key=lambda pair: (-pair[0], pair[1]),
             )
-            matched = [n for score, n in scored if score >= self.NAME_SEARCH_FUZZY_THRESHOLD]
+            matched = [n for score, n in scored if score >= self.NAME_SEARCH_FUZZY_THRESHOLD][: self.NAME_SEARCH_MAX_RESULTS]
 
         for n in matched:
             result.add(n, is_read_only=n in readonly_names)
@@ -479,24 +590,33 @@ class MemoryManager:
 
     def search_memories_by_front_matter(self, query: str) -> list[dict]:
         """Find memories by what they are ABOUT — searches every field of each memory's YAML
-        front-matter (e.g. ``name``, ``description``, a flat ``type`` or a nested ``metadata``
-        block) rather than its file name.
+        front-matter (``name``, ``description``, a flat ``type`` or a nested ``metadata`` block
+        including ``metadata.keywords``) rather than its file name.
 
-        Memories without a front-matter block are skipped silently (they contribute nothing to
-        this search — use search_memories_by_name for those).
+        The query is tokenized on non-alphanumerics and matched as OR-of-terms (so
+        ``claude_admin`` matches ``claude admin``, and a long phrase matches on a subset of its
+        words), ranked by distinct terms matched with a full-phrase bonus. Nested fields are
+        reported with dotted names (``metadata.keywords``). Memories without a front-matter
+        block are skipped silently (use search_memories_by_name for those).
 
-        :param query: the keyword to look for in the front matter
-        :return: a list of dicts ``{"memory": <name>, "field": <matched field>, "value": <matched
-            value>, "read_only": <bool>}`` — one entry per matched field, memory names sorted.
+        :param query: the keyword(s) to look for in the front matter
+        :return: a list of dicts ``{"memory": <name>, "field": <matched field>, "value":
+            <matched value>, "score": <int>, "read_only": <bool>}`` — one entry per matched
+            field, best-scoring memory first.
         """
         all_memories = self.list_memories()
         readonly_names = set(all_memories.read_only_memories)
         q = query.strip().lower()
 
-        hits: list[dict] = []
         if not q:
-            return hits
+            return []
+        terms = self._query_terms(query) or [q]
 
+        # (score, name, [(field, value), ...]) per matching memory; the query matches a memory
+        # when ANY term is a substring of ANY flattened front-matter field (dotted names, e.g.
+        # ``metadata.keywords``). Score = distinct terms matched, with a full-phrase bonus so
+        # exact multi-word matches rank above partial term overlaps.
+        ranked: list[tuple[int, str, list[tuple[str, str]]]] = []
         for name in all_memories.get_full_list():
             try:
                 content = self.load_memory(name)
@@ -505,20 +625,35 @@ class MemoryManager:
             fm = self._parse_front_matter(content)
             if not fm:
                 continue
-            # Search every front-matter field. Handles both shapes in use: a flat ``type:`` and a
-            # nested ``metadata:`` block (str() of the mapping still contains its values, e.g.
-            # "{'type': 'reference'}"), so a query like "reference" matches either shape.
-            for field, value in fm.items():
-                value_str = str(value)
-                if q in value_str.lower():
-                    hits.append(
-                        {
-                            "memory": name,
-                            "field": field,
-                            "value": value_str,
-                            "read_only": name in readonly_names,
-                        }
-                    )
+            matched_terms: set[str] = set()
+            phrase_matched = False
+            field_hits: list[tuple[str, str]] = []
+            for field, value in self._flatten_front_matter(fm):
+                value_lower = value.lower()
+                terms_in_field = [t for t in terms if t in value_lower]
+                has_phrase = len(terms) > 1 and q in value_lower
+                if terms_in_field or has_phrase:
+                    field_hits.append((field, value))
+                    matched_terms.update(terms_in_field)
+                    phrase_matched = phrase_matched or has_phrase
+            if not field_hits:
+                continue
+            score = len(matched_terms) + (len(terms) if phrase_matched else 0)
+            ranked.append((score, name, field_hits))
+
+        ranked.sort(key=lambda entry: (-entry[0], entry[1]))
+        hits: list[dict] = []
+        for score, name, field_hits in ranked:
+            for field, value in field_hits:
+                hits.append(
+                    {
+                        "memory": name,
+                        "field": field,
+                        "value": value,
+                        "score": score,
+                        "read_only": name in readonly_names,
+                    }
+                )
         return hits
 
     def delete_memory(self, name: str, is_tool_context: bool) -> str:
@@ -615,6 +750,7 @@ class MemoryManager:
             original_content = f.read()
         replacer = ContentReplacer(mode=mode, allow_multiple_occurrences=allow_multiple_occurrences, regex_multiline=regex_multiline)
         updated_content = replacer.replace(original_content, needle, repl)
+        updated_content = self._normalize_stacked_front_matter(updated_content)
         with open(memory_file_path, "w", encoding=self._encoding) as f:
             f.write(updated_content)
         return f"Memory {name} edited successfully."

@@ -2,9 +2,41 @@ import logging
 import re
 from typing import Literal
 
+from serena.memories.memory_manager import MemoryManager
 from serena.tools import Tool, ToolMarkerCanEdit
 
 log = logging.getLogger(__name__)
+
+
+def search_by_name_with_fallback(memory_manager: MemoryManager, query: str, fuzzy: bool = True) -> dict:
+    """Name search with an automatic front-matter fallback on zero hits.
+
+    A fact that lives only in a memory's front matter (description/keywords) is unreachable
+    by name search; chaining the searches means a zero-hit name query still surfaces it
+    instead of returning an empty result the caller may misread as "no such memory".
+    """
+    result = memory_manager.search_memories_by_name(query, fuzzy=fuzzy).to_dict()
+    if result:
+        return result
+    front_matter_hits = memory_manager.search_memories_by_front_matter(query)
+    if front_matter_hits:
+        return {"front_matter_fallback": front_matter_hits}
+    return {}
+
+
+def search_by_front_matter_with_fallback(memory_manager: MemoryManager, query: str) -> list | dict:
+    """Front-matter search with an automatic name-search fallback on zero hits.
+
+    Memories without a front-matter block are invisible to front-matter search; the fallback
+    still surfaces them by name.
+    """
+    hits = memory_manager.search_memories_by_front_matter(query)
+    if hits:
+        return hits
+    name_result = memory_manager.search_memories_by_name(query).to_dict()
+    if name_result:
+        return {"name_fallback": name_result}
+    return []
 
 
 class WriteMemoryTool(Tool, ToolMarkerCanEdit):
@@ -144,16 +176,20 @@ class SearchMemoriesByNameTool(Tool):
     def apply(self, query: str, fuzzy: bool = True) -> str:
         """
         Finds memories whose NAME matches `query`, for when you know roughly what a memory is
-        called but not its exact name or directory prefix. Matches `query` case-insensitively as a
-        substring of the memory name (both the full `dir/NAME` form and the base `NAME`). When no
-        substring matches and `fuzzy` is true, falls back to similarity ranking so a loose keyword
-        still surfaces close names. Searches names only, not memory content.
+        called but not its exact name or directory prefix. The query is tokenized on
+        non-alphanumerics and matched case-insensitively against the memory name (both the full
+        `dir/NAME` form and the base `NAME`); multi-term queries match on any term, ranked and
+        capped. When no name matches and `fuzzy` is true, falls back to similarity ranking so a
+        loose keyword still surfaces close names. When the name search finds NOTHING, the same
+        query is automatically run against memory front matter and returned under
+        `front_matter_fallback` — so a fact recorded in a description/keywords still surfaces.
 
         :param query: the keyword or partial name to search for
         :param fuzzy: whether to fall back to fuzzy similarity ranking when no substring matches
-        :return: JSON with matching memory names (and read-only memory names)
+        :return: JSON with matching memory names (and read-only memory names), or
+            `{"front_matter_fallback": [...]}` when only the front-matter fallback matched
         """
-        return self._to_json(self.memory_manager.search_memories_by_name(query, fuzzy=fuzzy).to_dict())
+        return self._to_json(search_by_name_with_fallback(self.memory_manager, query, fuzzy=fuzzy))
 
 
 class SearchMemoriesByFrontMatterTool(Tool):
@@ -164,20 +200,26 @@ class SearchMemoriesByFrontMatterTool(Tool):
     def apply(self, query: str, max_answer_chars: int = -1) -> str:
         """
         Finds memories by what they are ABOUT, searching each memory's YAML front-matter
-        (`name`, `description`, `metadata`) rather than its file name. Matches `query`
-        case-insensitively against those fields. Memories that have no front-matter block are
-        skipped (use `search_memories_by_name` to find those by name).
+        (`name`, `description`, `metadata` including `metadata.keywords`) rather than its file
+        name. The query is tokenized on non-alphanumerics and matched case-insensitively as
+        OR-of-terms, ranked (best match first, each hit carries a `score`). When the
+        front-matter search finds NOTHING, the same query is automatically run against memory
+        names and returned under `name_fallback` — so memories without front matter still
+        surface.
 
-        :param query: the keyword to look for in the front matter
+        :param query: the keyword(s) to look for in the front matter
         :param max_answer_chars: if the output exceeds this many characters, a shortened summary is
             returned instead. Defaults to the configured tool-answer limit.
-        :return: JSON list of matches, each `{memory, field, value, read_only}`
+        :return: JSON list of matches, each `{memory, field, value, score, read_only}`, or
+            `{"name_fallback": {...}}` when only the name fallback matched
         """
-        hits = self.memory_manager.search_memories_by_front_matter(query)
-        result = self._to_json(hits)
+        result_data = search_by_front_matter_with_fallback(self.memory_manager, query)
+        result = self._to_json(result_data)
 
         def _names_only() -> str:
-            return self._to_json(sorted({h["memory"] for h in hits}))
+            if isinstance(result_data, list):
+                return self._to_json(sorted({h["memory"] for h in result_data}))
+            return self._to_json(result_data)
 
         return self._limit_length(result, max_answer_chars, shortened_result_factories=[_names_only])
 
