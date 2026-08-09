@@ -87,7 +87,7 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit):
 
 
 def _clean_memory_header(content: str) -> str:
-    """Make a memory's leading title render cleanly in raw-markdown clients.
+    r"""Make a memory's leading title render cleanly in raw-markdown clients.
 
     Claude Code disables structured tool output (see the claude-code context), so memory content is
     returned as raw markdown. Two things render badly in some clients (e.g. the VS Code extension):

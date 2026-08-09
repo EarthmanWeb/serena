@@ -527,7 +527,7 @@ class MemoryManager:
             dotted = f"{prefix}{key}"
             if isinstance(value, dict):
                 fields.extend(MemoryManager._flatten_front_matter(value, dotted + "."))
-            elif isinstance(value, (list, tuple)):
+            elif isinstance(value, list | tuple):
                 fields.append((dotted, ", ".join(str(item) for item in value)))
             else:
                 fields.append((dotted, str(value)))
