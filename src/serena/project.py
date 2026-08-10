@@ -297,10 +297,15 @@ class Project(ToStringMixin):
         path = os.path.normpath(path)
 
         try:
-            return os.path.commonpath([self.project_root, path]) == self.project_root
+            if os.path.commonpath([self.project_root, path]) == self.project_root:
+                return True
         except ValueError:
             # occurs, in particular, if paths are on different drives on Windows
             return False
+
+        # allow paths that resolve into a configured workspace folder (cross-repo access
+        # in a multi-repo layout, e.g. siblings via ls_additional_workspace_folders)
+        return self._workspace_root_containing(str(path)) is not None
 
     def relative_path_exists(self, relative_path: str) -> bool:
         """
@@ -311,6 +316,98 @@ class Project(ToStringMixin):
         """
         abs_path = Path(self.project_root) / relative_path
         return abs_path.exists()
+
+    def _abs_folders(self, folders: list[str]) -> list[str]:
+        """Resolve a list of (possibly relative) workspace-folder paths to existing absolute paths."""
+        resolved: list[str] = []
+        for path in folders:
+            abs_path = str(Path(path).resolve()) if os.path.isabs(path) else os.path.realpath(os.path.join(self.project_root, path))
+            if os.path.exists(abs_path) and abs_path not in resolved:
+                resolved.append(abs_path)
+        return resolved
+
+    @property
+    def abs_additional_workspace_folders(self) -> list[str]:
+        """Absolute paths of the additional (cross-package) workspace folders configured via
+        ``ls_additional_workspace_folders``, resolved against the project root.
+        """
+        return self._abs_folders(self.project_config.ls_additional_workspace_folders)
+
+    @property
+    def abs_workspace_folders(self) -> list[str]:
+        """
+        The absolute paths of all configured workspace folders (primary indexed folders plus
+        additional cross-package folders), resolved against the project root.
+
+        These are the roots a relative path is allowed to resolve into, enabling cross-repo
+        symbol/search access in a multi-repo layout (siblings declared via
+        ``ls_additional_workspace_folders``).
+        """
+        cfg = self.project_config
+        primary = [f for f in cfg.ls_workspace_folders if f not in (".", "")]
+        return self._abs_folders(primary) + self.abs_additional_workspace_folders
+
+    def _workspace_root_containing(self, abs_path: str) -> str | None:
+        """
+        :return: the configured workspace-folder root that (after resolving symlinks and ``..``)
+            contains ``abs_path``, or None if it is outside every configured workspace folder.
+        """
+        resolved = os.path.realpath(abs_path)
+        for root in self.abs_workspace_folders:
+            try:
+                if os.path.commonpath([root, resolved]) == root:
+                    return root
+            except ValueError:
+                # different drives on Windows
+                continue
+        return None
+
+    def resolve_relative_path(self, relative_path: str) -> str:
+        """
+        Resolves a relative path to one that exists, transparently locating it in a sibling
+        workspace folder when it is not found under the project root.
+
+        This makes bare, plugin-rooted paths "just work" in a multi-repo layout: e.g. with
+        ``../convenely_plugin_repo`` configured as an additional workspace folder,
+        ``em-training/includes/rest/class-rest-base.php`` resolves to
+        ``../convenely_plugin_repo/em-training/includes/rest/class-rest-base.php``.
+
+        Resolution order:
+        1. If the path already exists under the project root (or resolves inside a workspace
+           folder), return it unchanged.
+        2. Otherwise search each additional workspace folder for ``<folder>/<relative_path>``.
+           Exactly one match -> return that (project-root-relative) path. Multiple matches ->
+           raise (ambiguous). Zero matches -> return the path unchanged (caller raises the
+           normal FileNotFoundError).
+
+        :param relative_path: a path relative to the project root
+        :return: a path relative to the project root that resolves to an existing file/dir
+            (possibly traversing into a sibling workspace folder via ``..``)
+        """
+        if os.path.isabs(relative_path):
+            return relative_path
+
+        # already resolvable as-is (under project root or an already-``..``-prefixed workspace path)
+        if os.path.exists(os.path.join(self.project_root, relative_path)):
+            return relative_path
+
+        matches: list[str] = []
+        for folder in self.abs_additional_workspace_folders:
+            candidate_abs = os.path.join(folder, relative_path)
+            if os.path.exists(candidate_abs):
+                candidate_rel = os.path.relpath(candidate_abs, self.project_root)
+                if candidate_rel not in matches:
+                    matches.append(candidate_rel)
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous relative path {relative_path!r}: found in multiple workspace folders "
+                f"({matches}). Disambiguate by prefixing the workspace folder, "
+                f"e.g. '../<repo>/{relative_path}'."
+            )
+        return relative_path
 
     def validate_relative_path(self, relative_path: str, require_not_ignored: bool = False) -> None:
         """

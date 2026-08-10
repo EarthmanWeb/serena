@@ -2029,6 +2029,22 @@ class SolidLanguageServer(ABC):
 
             return document_symbols
 
+    def _workspace_relative_path(self, abs_path: str) -> str:
+        """Compute a path for ``abs_path`` relative to the repository root, or — when it lives in
+        a configured (additional) workspace folder outside the repository root — relative to the
+        repository root via ``..`` traversal.
+
+        This keeps directory-scoped symbol traversal working for cross-repo (sibling) paths, which
+        resolve outside ``repository_root_path`` and would otherwise raise from ``relative_to``.
+        """
+        resolved = os.path.realpath(abs_path)
+        try:
+            return str(Path(resolved).relative_to(self.repository_root_path))
+        except ValueError:
+            # outside the repository root: express relative to the repo root through ".." so that
+            # downstream join(repository_root, rel) still resolves to the same file
+            return os.path.relpath(resolved, self.repository_root_path)
+
     def request_full_symbol_tree(self, within_relative_path: str | None = None) -> list[ls_types.UnifiedSymbolInformation]:
         """
         Will go through all files in the project or within a relative path and build a tree of symbols.
@@ -2051,11 +2067,7 @@ class SolidLanguageServer(ABC):
         def process_directory(abs_dir_path: str) -> list[ls_types.UnifiedSymbolInformation]:
             abs_dir_path = os.path.realpath(abs_dir_path)
 
-            rel_dir_path: str | None
-            try:
-                rel_dir_path = str(Path(abs_dir_path).relative_to(self.repository_root_path))
-            except ValueError:  # not relative to repository root
-                rel_dir_path = None
+            rel_dir_path: str | None = self._workspace_relative_path(abs_dir_path)
             if rel_dir_path and self.is_ignored_path(rel_dir_path):
                 log.debug("Skipping directory: %s (because it should be ignored)", rel_dir_path)
                 return []
@@ -2074,7 +2086,7 @@ class SolidLanguageServer(ABC):
                     uri=str(pathlib.Path(abs_dir_path).as_uri()),
                     range={"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
                     absolutePath=str(abs_dir_path),
-                    relativePath=str(Path(abs_dir_path).resolve().relative_to(self.repository_root_path)),
+                    relativePath=self._workspace_relative_path(abs_dir_path),
                 ),
                 children=[],
             )
@@ -2088,20 +2100,8 @@ class SolidLanguageServer(ABC):
                     log.debug("Skipping broken symlink: %s", contained_dir_or_file_abs_path)
                     continue
 
-                # obtain relative path
-                try:
-                    contained_dir_or_file_rel_path = str(
-                        Path(contained_dir_or_file_abs_path).resolve().relative_to(self.repository_root_path)
-                    )
-                except ValueError as e:
-                    # Typically happens when the path is not under the repository root (e.g., symlink pointing outside)
-                    log.warning(
-                        "Skipping path %s; likely outside of the repository root %s [cause: %s]",
-                        contained_dir_or_file_abs_path,
-                        self.repository_root_path,
-                        e,
-                    )
-                    continue
+                # obtain relative path (workspace-aware: sibling paths resolve via "..")
+                contained_dir_or_file_rel_path = self._workspace_relative_path(contained_dir_or_file_abs_path)
 
                 if self.is_ignored_path(contained_dir_or_file_rel_path):
                     log.debug("Skipping item: %s (because it should be ignored)", contained_dir_or_file_rel_path)
@@ -2129,7 +2129,7 @@ class SolidLanguageServer(ABC):
                                 uri=str(pathlib.Path(contained_dir_or_file_abs_path).as_uri()),
                                 range=file_range,
                                 absolutePath=str(contained_dir_or_file_abs_path),
-                                relativePath=str(Path(contained_dir_or_file_abs_path).resolve().relative_to(self.repository_root_path)),
+                                relativePath=self._workspace_relative_path(contained_dir_or_file_abs_path),
                             ),
                             children=file_root_nodes,
                             parent=package_symbol,

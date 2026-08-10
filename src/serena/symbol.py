@@ -755,6 +755,8 @@ class LanguageServerSymbolRetriever:
         optionally limited to a specific file and filtered by kind.
         """
         symbols: list[LanguageServerSymbol] = []
+        if within_relative_path:
+            within_relative_path = self.project.resolve_relative_path(within_relative_path)
         if within_relative_path and os.path.isfile(os.path.join(self.project.project_root, within_relative_path)):
             """
             For a specific file, use get_language_server to select the best LS for the file type
@@ -1151,6 +1153,7 @@ class LanguageServerSymbolRetriever:
         :return: a mapping from file paths to lists of symbols.
             For the case where a file is passed, the mapping will contain a single entry.
         """
+        relative_path = self.project.resolve_relative_path(relative_path)
         lang_server = self.get_language_server(relative_path)
         path_to_unified_symbols = lang_server.request_overview(relative_path)
         return {k: [LanguageServerSymbol(us) for us in v] for k, v in path_to_unified_symbols.items()}
