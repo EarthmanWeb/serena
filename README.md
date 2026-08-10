@@ -215,6 +215,40 @@ To achieve this, Serena offers multiple levels of (composable) configuration:
 
 </details>
 
+## Multi-Repo Workspaces (cross-repo symbols)
+
+Serena can index and operate on **sibling repositories** alongside the primary project, so symbol
+retrieval, search, reading and editing work across repo boundaries in a multi-repo layout (e.g. a
+base app plus sibling plugin/theme/library repos).
+
+**Configure** the sibling repos in the project's `.serena/project.yml`:
+
+```yaml
+# paths relative to the project root; indexed as extra LSP workspace folders
+ls_additional_workspace_folders:
+  - ../my_plugin_repo
+  - ../my_theme_repo
+  - ../my_shared_library
+```
+
+Restart the MCP server after editing (workspace folders are resolved at startup).
+
+**Reference sibling files by their natural path** across all path-taking tools
+(`get_symbols_overview`, `find_symbol` — file- and directory-scoped —, `search_for_pattern`,
+`read_file`, and the editing tools):
+
+- **Bare, unprefixed** — `my_plugin_repo_subdir/src/Thing.php` auto-resolves into whichever
+  configured sibling folder contains it, with **no prefix required**.
+- **Explicit** — `../my_plugin_repo/src/Thing.php` always works.
+
+Resolution rules: a path found under the project root always wins; an unknown path passes through
+unchanged (normal not-found); a path present in **more than one** configured sibling raises an
+`Ambiguous` error — disambiguate with the `../<repo>/` prefix. A `..` path that escapes into a
+directory **not** listed in `ls_additional_workspace_folders` is rejected as outside the project.
+
+> Adding a new sibling repo: append its `../<repo>` path to `ls_additional_workspace_folders` and
+> restart. Until it is listed, its symbols are invisible to Serena.
+
 ## Quick Start
 
 **Prerequisites**. Serena is managed by *uv*, and [installing uv](https://docs.astral.sh/uv/getting-started/installation/) is the only required prerequisite.
