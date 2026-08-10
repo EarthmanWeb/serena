@@ -376,6 +376,18 @@ class Tool(Component):
                 if self._is_session_aware:
                     apply_kwargs["session_id"] = session_id
 
+                # transparently resolve relative-path arguments into a configured sibling
+                # workspace folder when they are not found under the project root, so bare,
+                # plugin-rooted paths "just work" across repos in a multi-repo layout.
+                # In-project paths always win (resolver returns them unchanged); unknown paths
+                # pass through untouched so new-file creation and normal errors are unaffected.
+                active_project = self.agent.get_active_project()
+                if active_project is not None:
+                    for path_param in ("relative_path", "within_relative_path"):
+                        value = apply_kwargs.get(path_param)
+                        if isinstance(value, str) and value:
+                            apply_kwargs[path_param] = active_project.resolve_relative_path(value)
+
                 # apply the actual tool
                 try:
                     result = apply_fn(**apply_kwargs)
