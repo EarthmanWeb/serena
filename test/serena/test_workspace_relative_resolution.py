@@ -140,3 +140,29 @@ class TestIsIgnoredPathSibling:
         project, _base_repo, _plugin_repo = multi_repo
         collected = project.gather_source_files("../plugin_repo/em-training")
         assert any(p.endswith("helper.py") for p in collected), collected
+
+
+class TestSearchForPatternSibling:
+    """search_for_pattern's underlying search finds matches inside a configured sibling dir. Without
+    the is_ignored_path fix this returns nothing (all sibling files treated as ignored).
+    """
+
+    def test_search_all_files_matches_in_sibling_dir(self, multi_repo) -> None:
+        """restrict_search_to_code_files=False path (scan_directory + is_ignored_path)."""
+        project, _base_repo, _plugin_repo = multi_repo
+        matches = project.search_project_files_for_pattern(
+            pattern="class EMTR_REST_Base",
+            relative_path="../plugin_repo/em-training",
+            code_files_only=False,
+        )
+        assert matches, "expected a match for 'class EMTR_REST_Base' in the sibling dir"
+
+    def test_search_code_files_matches_source_in_sibling_dir(self, multi_repo) -> None:
+        """code_files_only=True path (gather_source_files) matches a source file in the sibling."""
+        project, _base_repo, _plugin_repo = multi_repo
+        matches = project.search_project_files_for_pattern(
+            pattern="def helper",
+            relative_path="../plugin_repo/em-training",
+            code_files_only=True,
+        )
+        assert matches, "expected a match for 'def helper' in the sibling source file"
