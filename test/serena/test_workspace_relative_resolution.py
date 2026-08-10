@@ -49,6 +49,8 @@ def multi_repo(tmp_path: Path):
     target = plugin_repo / "em-training" / "includes" / "rest"
     target.mkdir(parents=True)
     (target / "class-rest-base.php").write_text("<?php\nabstract class EMTR_REST_Base {}\n")
+    # a source file in the project's language (Python) so source-file gathering picks it up
+    (plugin_repo / "em-training" / "helper.py").write_text("def helper():\n    return 1\n")
 
     project = _make_project(base_repo, additional_workspace_folders=["../plugin_repo"])
     return project, base_repo, plugin_repo
@@ -115,3 +117,26 @@ class TestIsPathInProject:
         """A '..' path that escapes into a folder NOT configured as a workspace is rejected."""
         project, _base_repo, _plugin_repo = multi_repo
         assert not project.is_path_in_project("../some_other_repo/secret.php")
+
+
+class TestIsIgnoredPathSibling:
+    """is_ignored_path must NOT auto-ignore a file merely because its absolute path is outside the
+    project root: files inside a configured sibling workspace folder are searchable. Without this,
+    search_for_pattern / file-gathering silently returns nothing for sibling directories.
+    """
+
+    def test_absolute_sibling_file_not_ignored(self, multi_repo) -> None:
+        project, _base_repo, plugin_repo = multi_repo
+        abs_file = str(plugin_repo / "em-training" / "helper.py")
+        assert not project.is_ignored_path(abs_file)
+
+    def test_absolute_path_outside_all_workspaces_is_ignored(self, multi_repo, tmp_path) -> None:
+        project, _base_repo, _plugin_repo = multi_repo
+        outside = str(tmp_path / "not_a_workspace" / "file.py")
+        assert project.is_ignored_path(outside)
+
+    def test_gather_source_files_includes_sibling(self, multi_repo) -> None:
+        """The source-file walk (used by search_for_pattern) collects files under a sibling dir."""
+        project, _base_repo, _plugin_repo = multi_repo
+        collected = project.gather_source_files("../plugin_repo/em-training")
+        assert any(p.endswith("helper.py") for p in collected), collected

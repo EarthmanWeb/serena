@@ -274,10 +274,14 @@ class Project(ToStringMixin):
             try:
                 relative_path = path.relative_to(self.project_root)
             except ValueError:
-                # If the path is not relative to the project root, we consider it as an absolute path outside the project
-                # (which we ignore)
-                log.warning(f"Path {path} is not relative to the project root {self.project_root} and was therefore ignored")
-                return True
+                # Not under the project root: if it resolves inside a configured (sibling) workspace
+                # folder, express it project-root-relative via ".." so the normal ignore rules apply
+                # (multi-repo layout). Only a path outside EVERY workspace folder is ignored outright.
+                if self._workspace_root_containing(str(path)) is not None:
+                    relative_path = os.path.relpath(str(path), self.project_root)
+                else:
+                    log.warning(f"Path {path} is not relative to the project root {self.project_root} and was therefore ignored")
+                    return True
         else:
             relative_path = path
 
