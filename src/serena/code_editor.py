@@ -103,6 +103,21 @@ class CodeEditor(Generic[TSymbol], ABC):
         :return: the unique symbol
         """
 
+    @staticmethod
+    def _extract_text_between_positions(contents: str, start_pos: PositionInFile, end_pos: PositionInFile) -> str:
+        """
+        Extracts the substring of ``contents`` spanning ``[start_pos, end_pos)`` using LSP
+        line/character coordinates (0-based line, 0-based UTF-16-agnostic character offset treated
+        as a Python character offset, which is correct for the BMP text these edits target).
+        """
+        lines = contents.split("\n")
+        if start_pos.line == end_pos.line:
+            return lines[start_pos.line][start_pos.col : end_pos.col]
+        pieces = [lines[start_pos.line][start_pos.col :]]
+        pieces.extend(lines[start_pos.line + 1 : end_pos.line])
+        pieces.append(lines[end_pos.line][: end_pos.col])
+        return "\n".join(pieces)
+
     def replace_body(self, name_path: str, relative_file_path: str, body: str) -> None:
         """
         Replaces the body of the symbol with the given name_path in the given file.
@@ -116,6 +131,20 @@ class CodeEditor(Generic[TSymbol], ABC):
         end_pos = symbol.get_body_end_position_or_raise()
 
         with self.edited_file_context(relative_file_path) as edited_file:
+            # Stale-range guard: a language server may report a symbol range computed against an
+            # in-memory view that diverges from the file on disk (e.g. an out-of-band edit that sends
+            # no didChange). Deleting/inserting at such coordinates lands mid-signature and corrupts the
+            # source. Require the resolved symbol's identifier to lie within the span about to be
+            # replaced; a divergent range fails fast instead of corrupting the file.
+            current_span = self._extract_text_between_positions(edited_file.get_contents(), start_pos, end_pos)
+            if symbol.name not in current_span:
+                raise ValueError(
+                    f"Refusing to replace body of '{name_path}': the resolved symbol range does not "
+                    f"match the file contents (identifier '{symbol.name}' is absent from the target "
+                    f"span), which indicates the file changed after the symbol was resolved. Re-read "
+                    f"the symbol (find_symbol with include_body=True) and retry."
+                )
+
             # make sure the replacement adds no additional newlines (before or after) - all newlines
             # and whitespace before/after should remain the same, so we strip it entirely
             body = body.strip()
