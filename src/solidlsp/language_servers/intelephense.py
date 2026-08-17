@@ -11,6 +11,7 @@ from overrides import override
 
 from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
 from solidlsp.ls_config import LanguageServerConfig
+from solidlsp.php_modifier_range import PhpModifierRangeMixin
 from solidlsp.ls_utils import PlatformId, PlatformUtils
 from solidlsp.lsp_protocol_handler.lsp_types import Definition, DefinitionParams, LocationLink
 from solidlsp.settings import SolidLSPSettings
@@ -27,7 +28,7 @@ INITIAL_INTELEPHENSE_VERSION = "1.14.4"
 DEFAULT_INTELEPHENSE_VERSION = "1.14.4"
 
 
-class Intelephense(SolidLanguageServer):
+class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
     """
     Provides PHP specific instantiation of the LanguageServer class using Intelephense.
 

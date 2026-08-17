@@ -13,6 +13,7 @@ from overrides import override
 
 from solidlsp.ls import LanguageServerDependencyProvider, LanguageServerDependencyProviderSinglePath, SolidLanguageServer
 from solidlsp.ls_config import Language, LanguageServerConfig
+from solidlsp.php_modifier_range import PhpModifierRangeMixin
 from solidlsp.ls_utils import FileUtils
 from solidlsp.settings import SolidLSPSettings
 
@@ -37,7 +38,7 @@ def _phpactor_sha(version: str) -> str | None:
     return None
 
 
-class PhpactorServer(SolidLanguageServer):
+class PhpactorServer(PhpModifierRangeMixin, SolidLanguageServer):
     """
     Provides PHP specific instantiation of the LanguageServer class using Phpactor.
 

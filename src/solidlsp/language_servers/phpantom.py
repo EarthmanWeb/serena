@@ -19,6 +19,7 @@ from solidlsp.ls import (
 )
 from solidlsp.ls_config import Language, LanguageServerConfig
 from solidlsp.ls_utils import PlatformId, PlatformUtils
+from solidlsp.php_modifier_range import PhpModifierRangeMixin
 from solidlsp.lsp_protocol_handler import lsp_types as protocol_lsp_types
 from solidlsp.lsp_protocol_handler.lsp_types import Definition, DefinitionParams, LocationLink
 from solidlsp.settings import SolidLSPSettings
@@ -111,7 +112,7 @@ def _create_phpantom_dependencies(version: str) -> RuntimeDependencyCollection:
     return RuntimeDependencyCollection(dependencies)
 
 
-class PHPantomServer(SolidLanguageServer):
+class PHPantomServer(PhpModifierRangeMixin, SolidLanguageServer):
     """
     Provides PHP specific instantiation of the LanguageServer class using PHPantom.
 

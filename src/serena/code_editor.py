@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator, Reversible
 from contextlib import contextmanager
@@ -17,6 +18,28 @@ from .util.file_proxy import FileProxy
 
 log = logging.getLogger(__name__)
 TSymbol = TypeVar("TSymbol", bound=Symbol)
+
+_PHP_MODIFIER = r"(?:public|private|protected|static|final|abstract|readonly)"
+
+# Two corruption shapes a modifier-excluding symbol range produces when the replacement body
+# re-supplies the modifiers, depending on whether the range started at ``function`` or at the name:
+#   1. name-start:     public static function public static function name(...)
+#   2. keyword-start:  public static public static function name(...)   (a repeated modifier keyword)
+# Shape 1 is a modifier run, then ``function``, then another modifier. Shape 2 is the SAME modifier
+# keyword appearing twice within one pre-``function`` modifier run.
+_PHP_MODIFIER_THEN_FUNCTION_THEN_MODIFIER_RE = re.compile(rf"\b{_PHP_MODIFIER}\s+(?:{_PHP_MODIFIER}\s+)*function\s+{_PHP_MODIFIER}\b")
+_PHP_REPEATED_MODIFIER_KEYWORD_RE = re.compile(
+    rf"\b({_PHP_MODIFIER})\b(?:\s+{_PHP_MODIFIER}\b)*\s+\1\b(?:\s+{_PHP_MODIFIER}\b)*\s+function\b"
+)
+
+
+def _count_duplicated_php_modifier_runs(text: str) -> int:
+    """Count occurrences of the duplicated-modifier corruption pattern in ``text``.
+
+    Covers both shapes: a modifier run followed by ``function`` followed by another modifier,
+    and the same modifier keyword repeated within a single pre-``function`` modifier run.
+    """
+    return len(_PHP_MODIFIER_THEN_FUNCTION_THEN_MODIFIER_RE.findall(text)) + len(_PHP_REPEATED_MODIFIER_KEYWORD_RE.findall(text))
 
 
 class CodeEditor(Generic[TSymbol], ABC):
@@ -149,8 +172,25 @@ class CodeEditor(Generic[TSymbol], ABC):
             # and whitespace before/after should remain the same, so we strip it entirely
             body = body.strip()
 
+            original_contents = edited_file.get_contents()
+            duplicated_before = _count_duplicated_php_modifier_runs(original_contents)
+
             edited_file.delete_text_between_positions(start_pos, end_pos)
             edited_file.insert_text_at_position(start_pos, body)
+
+            # Corruption guard: a modifier-excluding symbol range combined with a modifier-bearing
+            # replacement body yields ``public static function public static function name`` — a
+            # PHP parse fatal. If the edit introduces such a run that was not present before, roll
+            # back and fail loudly instead of returning OK on a broken file.
+            if _count_duplicated_php_modifier_runs(edited_file.get_contents()) > duplicated_before:
+                edited_file.set_contents(original_contents)
+                raise ValueError(
+                    f"Refusing to replace body of '{name_path}': the edit would produce a duplicated "
+                    f"method-modifier run (e.g. 'public static function public static function ...'), "
+                    f"which is a PHP parse error. The resolved symbol range excludes the leading "
+                    f"visibility/static modifiers; supply the body WITHOUT re-declaring them, or re-read "
+                    f"the symbol (find_symbol with include_body=True) and retry."
+                )
 
     @staticmethod
     def _count_leading_newlines(text: Iterable) -> int:

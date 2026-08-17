@@ -531,6 +531,78 @@ def test_go_symbol_replacement_no_double_keyword(snapshot: SnapshotAssertion):
     test_case.run_test(content_after_ground_truth=snapshot)
 
 
+# The declaration text a user re-supplies after copying the body find_symbol displays for a
+# `public static` PHP method — with a changed body so the edit is observable. Replacing with this
+# must not duplicate the modifiers (``public static function public static function ...``).
+PHP_MODIFIER_METHOD_REPLACEMENT = """public static function publicStatic(): int
+    {
+        return 42;
+    }"""
+
+
+class PhpModifierMethodReplacementTest(EditingTest):
+    """Replace a modifier-bearing PHP method re-supplying the full ``public static function``
+    declaration; the widened range must consume the original modifiers so the result is NOT
+    ``public static function public static function ...`` (a PHP parse fatal).
+    """
+
+    def __init__(self, language: Language, rel_path: str, symbol_name: str, new_body: str):
+        super().__init__(language, rel_path)
+        self.symbol_name = symbol_name
+        self.new_body = new_body
+
+    def _apply_edit(self, code_editor: CodeEditor) -> None:
+        code_editor.replace_body(self.symbol_name, self.rel_path, self.new_body)
+
+    @overrides
+    def _test_diff(self, code_diff: CodeDiff, snapshot: SnapshotAssertion | None) -> None:
+        content = code_diff.modified_content
+        assert "public static function public static function" not in content, f"Replacement duplicated the method modifiers: {content!r}"
+        assert "public static function public static" not in content, f"Replacement duplicated the method modifiers: {content!r}"
+        assert content.count("public static function publicStatic") == 1
+        # the changed body applied and the other methods are untouched
+        assert "return 42;" in content
+        assert "): int" in content
+        assert content.count("function") == 4
+        return super()._test_diff(code_diff, snapshot)
+
+
+@pytest.mark.php
+def test_php_modifier_method_replacement_no_duplicate(snapshot: SnapshotAssertion):
+    PhpModifierMethodReplacementTest(
+        Language.PHP,
+        "modifier_methods.php",
+        "ModifierMethods/publicStatic",
+        PHP_MODIFIER_METHOD_REPLACEMENT,
+    ).run_test(content_after_ground_truth=snapshot)
+
+
+@pytest.mark.php
+@pytest.mark.parametrize(
+    ("symbol_name", "expected_prefix"),
+    [
+        ("ModifierMethods/publicStatic", "public static function"),
+        ("ModifierMethods/privateStatic", "private static function"),
+        ("ModifierMethods/finalProtected", "final protected function"),
+        ("ModifierMethods/plain", "public function"),
+    ],
+)
+def test_php_include_body_returns_modifiers(symbol_name: str, expected_prefix: str):
+    """``find_symbol(include_body=True)`` returns the leading modifiers for a PHP method, so the
+    read body and the replacement range are symmetric (lossless round-trip).
+    """
+    from test.conftest import get_repo_path
+
+    repo_path = get_repo_path(Language.PHP)
+    with project_with_ls_context(Language.PHP, str(repo_path)) as project:
+        retriever = LanguageServerSymbolRetriever(project)
+        editor = LanguageServerCodeEditor(retriever)
+        symbol = editor._find_unique_symbol(symbol_name, "modifier_methods.php")
+        body = symbol.body
+        assert body is not None
+        assert body.lstrip().startswith(expected_prefix), f"body did not include modifiers: {body!r}"
+
+
 class RenameSymbolTest(EditingTest):
     def __init__(self, language: Language, rel_path: str, symbol_name: str, new_name: str):
         super().__init__(language, rel_path)
