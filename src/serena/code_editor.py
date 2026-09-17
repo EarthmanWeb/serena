@@ -21,25 +21,35 @@ TSymbol = TypeVar("TSymbol", bound=Symbol)
 
 _PHP_MODIFIER = r"(?:public|private|protected|static|final|abstract|readonly)"
 
-# Two corruption shapes a modifier-excluding symbol range produces when the replacement body
-# re-supplies the modifiers, depending on whether the range started at ``function`` or at the name:
+# Three corruption shapes a declaration-excluding symbol range produces when the replacement body
+# re-supplies the declaration, depending on whether the range started at ``function``, at the name,
+# or after modifiers:
 #   1. name-start:     public static function public static function name(...)
 #   2. keyword-start:  public static public static function name(...)   (a repeated modifier keyword)
+#   3. name-start, keyword re-supplied:  function function name(...)    (no modifiers involved —
+#      the range of a plain function starts at the NAME, and the body re-declares ``function``)
 # Shape 1 is a modifier run, then ``function``, then another modifier. Shape 2 is the SAME modifier
-# keyword appearing twice within one pre-``function`` modifier run.
+# keyword appearing twice within one pre-``function`` modifier run. Shape 3 is a bare doubled
+# ``function`` keyword, which is never valid PHP (``function`` cannot be a function name).
 _PHP_MODIFIER_THEN_FUNCTION_THEN_MODIFIER_RE = re.compile(rf"\b{_PHP_MODIFIER}\s+(?:{_PHP_MODIFIER}\s+)*function\s+{_PHP_MODIFIER}\b")
 _PHP_REPEATED_MODIFIER_KEYWORD_RE = re.compile(
     rf"\b({_PHP_MODIFIER})\b(?:\s+{_PHP_MODIFIER}\b)*\s+\1\b(?:\s+{_PHP_MODIFIER}\b)*\s+function\b"
 )
+_PHP_DUPLICATED_FUNCTION_KEYWORD_RE = re.compile(r"\bfunction\s+function\b")
 
 
 def _count_duplicated_php_modifier_runs(text: str) -> int:
-    """Count occurrences of the duplicated-modifier corruption pattern in ``text``.
+    """Count occurrences of the duplicated-declaration corruption pattern in ``text``.
 
-    Covers both shapes: a modifier run followed by ``function`` followed by another modifier,
-    and the same modifier keyword repeated within a single pre-``function`` modifier run.
+    Covers all three shapes: a modifier run followed by ``function`` followed by another modifier,
+    the same modifier keyword repeated within a single pre-``function`` modifier run, and a bare
+    doubled ``function`` keyword (plain functions whose range starts at the name).
     """
-    return len(_PHP_MODIFIER_THEN_FUNCTION_THEN_MODIFIER_RE.findall(text)) + len(_PHP_REPEATED_MODIFIER_KEYWORD_RE.findall(text))
+    return (
+        len(_PHP_MODIFIER_THEN_FUNCTION_THEN_MODIFIER_RE.findall(text))
+        + len(_PHP_REPEATED_MODIFIER_KEYWORD_RE.findall(text))
+        + len(_PHP_DUPLICATED_FUNCTION_KEYWORD_RE.findall(text))
+    )
 
 
 class CodeEditor(Generic[TSymbol], ABC):
@@ -178,18 +188,20 @@ class CodeEditor(Generic[TSymbol], ABC):
             edited_file.delete_text_between_positions(start_pos, end_pos)
             edited_file.insert_text_at_position(start_pos, body)
 
-            # Corruption guard: a modifier-excluding symbol range combined with a modifier-bearing
-            # replacement body yields ``public static function public static function name`` — a
-            # PHP parse fatal. If the edit introduces such a run that was not present before, roll
-            # back and fail loudly instead of returning OK on a broken file.
+            # Corruption guard: a declaration-excluding symbol range combined with a body that
+            # re-supplies the declaration yields ``public static function public static function
+            # name`` (methods) or ``function function name`` (plain functions) — PHP parse fatals.
+            # If the edit introduces such a run that was not present before, roll back and fail
+            # loudly instead of returning OK on a broken file.
             if _count_duplicated_php_modifier_runs(edited_file.get_contents()) > duplicated_before:
                 edited_file.set_contents(original_contents)
                 raise ValueError(
                     f"Refusing to replace body of '{name_path}': the edit would produce a duplicated "
-                    f"method-modifier run (e.g. 'public static function public static function ...'), "
-                    f"which is a PHP parse error. The resolved symbol range excludes the leading "
-                    f"visibility/static modifiers; supply the body WITHOUT re-declaring them, or re-read "
-                    f"the symbol (find_symbol with include_body=True) and retry."
+                    f"declaration run (e.g. 'public static function public static function ...' or "
+                    f"'function function ...'), which is a PHP parse error. The resolved symbol range "
+                    f"excludes part of the declaration (leading modifiers and/or the 'function' "
+                    f"keyword); supply the body starting EXACTLY where the body returned by "
+                    f"find_symbol(include_body=True) starts, without re-declaring the excluded part."
                 )
 
     @staticmethod

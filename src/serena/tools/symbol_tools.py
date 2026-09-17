@@ -587,9 +587,14 @@ class ReplaceSymbolBodyTool(EditingToolWithDiagnostics):
 
         :param name_path: name path of the symbol whose body to replace
         :param relative_path: the relative path to the file containing the symbol
-        :param body: the new symbol body. The symbol body is the definition of a symbol
-            in the programming language, including e.g. the signature line for functions.
-            Depending on the language, it may or may not include a preceding docstring or other preceding annotations.
+        :param body: the new symbol body. The body MUST start exactly where the body returned by
+            find_symbol(include_body=True) starts — that retrieved body IS the span that gets replaced;
+            everything before it in the source line is kept verbatim. What the span includes varies by
+            language and symbol kind: leading keywords (e.g. PHP's ``function``), visibility/static
+            modifiers, docstrings, or annotations may fall OUTSIDE the span. Re-declaring an excluded
+            part duplicates it (e.g. ``function function name`` / ``public static function public
+            static function name`` — parse fatals). Do NOT infer the correct start from the file text
+            or from other symbols; mirror the first characters of the retrieved body.
         """
         with self.DiagnosticsContext(self, relative_path) as diagnostics_context:
             code_editor = self.create_code_editor()

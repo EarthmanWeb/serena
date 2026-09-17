@@ -132,6 +132,46 @@ class TestReplaceBodyModifierDupGuard:
         assert "public static function public static function" not in result
         assert "): int {" in result
 
+    def test_raises_and_rolls_back_on_bare_function_keyword_dup(self) -> None:
+        # Plain top-level function whose range starts at the NAME (the ``function`` keyword is
+        # outside the range). Caller re-supplies ``function name(...)`` → would produce
+        # ``function function name(...)`` — a parse fatal with no modifiers involved.
+        plain_fn = "<?php\n\nfunction em_probe() {\n  return 1;\n}\n"
+        lines = plain_fn.split("\n")
+        decl_idx = next(i for i, ln in enumerate(lines) if "function em_probe" in ln)
+        start = PositionInFile(line=decl_idx, col=lines[decl_idx].index("em_probe"))
+        end = PositionInFile(line=lines.index("}"), col=len("}"))
+        symbol = _FakeSymbol("em_probe", start, end)
+        edited = _FakeEditedFile("probe.php", plain_fn)
+        editor = _FakeCodeEditor(symbol, edited)
+
+        with pytest.raises(ValueError, match="duplicated"):
+            editor.replace_body(
+                "em_probe",
+                "probe.php",
+                "function em_probe() {\n  return 2;\n}",
+            )
+
+        assert edited.get_contents() == plain_fn
+
+    def test_name_start_body_without_keyword_round_trips(self) -> None:
+        # Same name-start range: supplying the body starting at the name is correct.
+        plain_fn = "<?php\n\nfunction em_probe() {\n  return 1;\n}\n"
+        lines = plain_fn.split("\n")
+        decl_idx = next(i for i, ln in enumerate(lines) if "function em_probe" in ln)
+        start = PositionInFile(line=decl_idx, col=lines[decl_idx].index("em_probe"))
+        end = PositionInFile(line=lines.index("}"), col=len("}"))
+        symbol = _FakeSymbol("em_probe", start, end)
+        edited = _FakeEditedFile("probe.php", plain_fn)
+        editor = _FakeCodeEditor(symbol, edited)
+
+        editor.replace_body("em_probe", "probe.php", "em_probe() {\n  return 2;\n}")
+
+        result = edited.get_contents()
+        assert "function function" not in result
+        assert result.count("function em_probe") == 1
+        assert "return 2;" in result
+
     def test_body_without_modifiers_does_not_trip_guard(self) -> None:
         # The documented workaround: supply the body WITHOUT re-declaring modifiers.
         start, end = _positions_at_function_keyword(PHP_MODIFIER_METHOD, "function bar")
