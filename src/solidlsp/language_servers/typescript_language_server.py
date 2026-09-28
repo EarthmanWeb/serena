@@ -74,6 +74,8 @@ class TypeScriptLanguageServer(SolidLanguageServer):
         - typescript_language_server_version: Version of typescript-language-server to install (default: "5.1.3")
         - indexing_timeout: float, timeout in seconds for project indexing (default: 30.0)
         - server_ready_timeout: float, timeout in seconds for the server-ready signal (default: 10.0)
+        - maxTsServerMemory: int, heap limit of the tsserver processes in MB (typescript-language-server's
+          `maxTsServerMemory` initialization option; default: tsserver's own default)
     """
 
     @classmethod
@@ -333,6 +335,9 @@ class TypeScriptLanguageServer(SolidLanguageServer):
                 },
             },
         }
+        max_ts_server_memory = self._custom_settings.get("maxTsServerMemory")
+        if max_ts_server_memory is not None:
+            initialize_params["initializationOptions"]["maxTsServerMemory"] = int(max_ts_server_memory)
         return initialize_params
 
     def _start_server(self) -> None:
