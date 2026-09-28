@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 
-# Pre-commit hook: auto-bump patch version in pyproject.toml and __init__.py
+# Post-merge hook: auto-bump patch version in pyproject.toml and __init__.py
 # Only runs on the 'swe' branch.
 
 CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
 if [ "$CURRENT_BRANCH" != "swe" ]; then
-    exit 0
-fi
-
-# If pyproject.toml is already staged, skip auto-bump (manual version set)
-if git diff --cached --name-only | grep -q "^pyproject.toml$"; then
     exit 0
 fi
 
@@ -51,7 +46,8 @@ sed -i '' "s/^__version__ = \"${CURRENT_VERSION}\"/__version__ = \"${NEW_VERSION
 # Re-lock so uv.lock carries the new project version (otherwise the next `uv run` rewrites it)
 uv lock --quiet || { echo "Error: uv lock failed after version bump"; exit 1; }
 
-# Stage the updated files so the version bump is included in the commit
+# Commit the version bump
 git add "$PYPROJECT" "$INIT_PY" uv.lock
+git commit --no-verify -m "Version bumped: ${CURRENT_VERSION} -> ${NEW_VERSION}"
 
 echo "Version bumped: ${CURRENT_VERSION} -> ${NEW_VERSION}"
