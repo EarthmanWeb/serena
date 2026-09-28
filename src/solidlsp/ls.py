@@ -276,7 +276,33 @@ class DocumentSymbols:
         self._all_symbols: list[ls_types.UnifiedSymbolInformation] | None = None
 
     def __getstate__(self) -> dict:
-        return getstate(DocumentSymbols, self, transient_properties=["_all_symbols"])
+        return getstate(
+            DocumentSymbols,
+            self,
+            transient_properties=["_all_symbols"],
+            override_properties={"root_symbols": self._copy_document_hierarchy(self.root_symbols)},
+        )
+
+    @staticmethod
+    def _copy_document_hierarchy(root_symbols: list[ls_types.UnifiedSymbolInformation]) -> list[ls_types.UnifiedSymbolInformation]:
+        """
+        Copies the document's symbol hierarchy without the roots' ``parent`` links.
+        The roots' parents are File symbols set by :meth:`SolidLanguageServer.request_full_symbol_tree`, which link to the
+        entire symbol tree of the workspace (including other files' symbols and source lines) and must therefore not
+        be persisted along with the document's symbols.
+        """
+
+        def copy_symbol(
+            symbol: ls_types.UnifiedSymbolInformation, parent: ls_types.UnifiedSymbolInformation | None
+        ) -> ls_types.UnifiedSymbolInformation:
+            symbol_copy = cast(ls_types.UnifiedSymbolInformation, {k: v for k, v in symbol.items() if k not in ("parent", "children")})
+            if parent is not None:
+                symbol_copy["parent"] = parent
+            if "children" in symbol:
+                symbol_copy["children"] = [copy_symbol(child, symbol_copy) for child in symbol["children"]]
+            return symbol_copy
+
+        return [copy_symbol(root_symbol, None) for root_symbol in root_symbols]
 
     def iter_symbols(self) -> Iterator[ls_types.UnifiedSymbolInformation]:
         """
@@ -323,7 +349,7 @@ class SolidLanguageServer(ABC):
     """
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME = "raw_document_symbols.pkl"
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME_LEGACY_FALLBACK = "document_symbols_cache_v23-06-25.pkl"
-    DOCUMENT_SYMBOL_CACHE_VERSION = 4
+    DOCUMENT_SYMBOL_CACHE_VERSION = 5
     """
     defines the version of the high-level document symbol format.
     This should be incremented whenever there is a change in the way document symbols are stored.

@@ -60,3 +60,33 @@ def test_pruning_without_stale_entries_does_not_mark_caches_modified(tmp_path: P
     ls._prune_symbol_caches()
     assert not ls._raw_document_symbols_cache_is_modified
     assert not ls._document_symbols_cache_is_modified
+
+
+def test_persisted_document_symbols_exclude_links_into_the_full_symbol_tree() -> None:
+    """
+    Evidence: request_full_symbol_tree sets ``parent`` of each file's root symbols to a File symbol, whose Package
+    parents link the whole tree (including other files' symbols and their full source lines). Pickling any single
+    cached DocumentSymbols entry of the convenely php cache produced ~165 MB (the whole graph, including superseded
+    versions of files), so the persisted cache retained everything ever linked. The persisted state keeps the
+    document's own symbol hierarchy only.
+    """
+    import pickle
+
+    child = {"name": "method", "kind": 6, "children": []}
+    root = {"name": "Cls", "kind": 5, "children": [child]}
+    child["parent"] = root
+    big_other_file = {"name": "other", "kind": 1, "children": [], "payload": "x" * 1_000_000}
+    package = {"name": "pkg", "kind": 4, "children": [big_other_file]}
+    file_symbol = {"name": "file", "kind": 1, "children": [root], "parent": package}
+    root["parent"] = file_symbol
+
+    data = pickle.dumps(DocumentSymbols([root]))  # type: ignore[list-item]
+    assert len(data) < 10_000
+
+    restored: DocumentSymbols = pickle.loads(data)
+    restored_root = restored.root_symbols[0]
+    assert "parent" not in restored_root
+    restored_child = restored_root["children"][0]
+    assert restored_child["parent"] is restored_root
+    # the in-memory instance is left untouched
+    assert root["parent"] is file_symbol
