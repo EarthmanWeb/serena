@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 import docstring_parser
 from mcp.server.fastmcp import server
@@ -51,6 +51,19 @@ class SerenaMCPRequestContext:
 
 
 class SerenaFastMCPTool(FastMCPTool):
+    # Display-only param injected into every tool's schema (unless it already declares one of
+    # DISPLAY_LABEL_SKIP_PARAMS) purely so that MCP clients which only surface a single string field
+    # from a tool call (e.g. the Claude Code VS Code extension, which shows no "IN" row for MCP tools
+    # and derives its header suffix from the first non-empty string among a fixed priority list of
+    # keys) have something meaningful to display. It is never read by the underlying tool: it is
+    # stripped from the arguments before the tool is invoked. See DISPLAY_LABEL_PARAM_NAME.
+    DISPLAY_LABEL_PARAM_NAME: ClassVar[str] = "message"
+    DISPLAY_LABEL_SKIP_PARAMS: ClassVar[set[str]] = {"query", "message"}
+    DISPLAY_LABEL_DESCRIPTION: ClassVar[str] = (
+        "Display-only one-line label shown in the client UI: the action this call performs, "
+        "e.g. `read_memory wf/WF_INIT` or `find_symbol Foo/bar in src/x.py`. Ignored by the server."
+    )
+
     def __init__(self, tool: Tool, openai_tool_compatible: bool, structured_output: bool | None):
         """
         :param tool: the Serena tool
@@ -63,6 +76,9 @@ class SerenaFastMCPTool(FastMCPTool):
         func_arg_metadata = tool.get_apply_fn_metadata(structured_output=structured_output)
         is_async = False
         parameters = func_arg_metadata.arg_model.model_json_schema()
+        add_display_label_param = not self.DISPLAY_LABEL_SKIP_PARAMS.intersection(parameters.get("properties", {}).keys())
+        if add_display_label_param:
+            self._inject_display_label_param(parameters)
         if openai_tool_compatible:
             parameters = SerenaMCPFactory._sanitize_for_openai_tools(parameters)
 
@@ -96,6 +112,8 @@ class SerenaFastMCPTool(FastMCPTool):
                 properties["description"] = param_desc[0].upper() + param_desc[1:]
 
         def execute_fn(**kwargs) -> str:
+            if add_display_label_param:
+                kwargs.pop(SerenaFastMCPTool.DISPLAY_LABEL_PARAM_NAME, None)
             try:
                 return tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs)
             except ToolCallError as e:
@@ -127,6 +145,23 @@ class SerenaFastMCPTool(FastMCPTool):
         )
 
         self._param_aliases = tool.get_param_aliases()
+
+    @classmethod
+    def _inject_display_label_param(cls, parameters: dict[str, Any]) -> None:
+        """
+        Adds the display-only `message` string param (see DISPLAY_LABEL_PARAM_NAME) to a tool's
+        JSON schema in place, marking it required. Mutates `parameters["properties"]` and
+        `parameters["required"]`.
+        """
+        properties = parameters.setdefault("properties", {})
+        properties[cls.DISPLAY_LABEL_PARAM_NAME] = {
+            "type": "string",
+            "title": cls.DISPLAY_LABEL_PARAM_NAME.capitalize(),
+            "description": cls.DISPLAY_LABEL_DESCRIPTION,
+        }
+        required = parameters.setdefault("required", [])
+        if cls.DISPLAY_LABEL_PARAM_NAME not in required:
+            required.append(cls.DISPLAY_LABEL_PARAM_NAME)
 
     async def run(
         self,

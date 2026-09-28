@@ -100,7 +100,8 @@ def test_make_tool_no_params() -> None:
 
     assert mcp_tool.name == "no_params"
     assert "This is a test function with no parameters. Returns A simple result." in mcp_tool.description
-    assert mcp_tool.parameters["properties"] == {}
+    # the display-only `message` param is still injected even for a tool with no real parameters
+    assert set(mcp_tool.parameters["properties"].keys()) == {"message"}
 
 
 def test_make_tool_no_return_description() -> None:
@@ -298,3 +299,71 @@ def test_make_tool_all_tools(tool_class) -> None:
 
     # The description should be a string (either from docstring or default)
     assert isinstance(mcp_tool.description, str)
+
+
+def test_display_label_param_injected_for_representative_tool() -> None:
+    """A tool without an existing `query`/`message` param gets a required, display-only `message`
+    param injected into its schema (used by MCP clients, e.g. the Claude Code VS Code extension,
+    that only surface a single string field from a tool call)."""
+    mock_tool = BasicTool()
+
+    mcp_tool = make_tool(mock_tool)
+
+    assert "message" in mcp_tool.parameters["properties"]
+    assert mcp_tool.parameters["properties"]["message"]["type"] == "string"
+    assert "message" in mcp_tool.parameters.get("required", [])
+    # original params are preserved
+    assert "name" in mcp_tool.parameters["properties"]
+    assert "age" in mcp_tool.parameters["properties"]
+
+
+def test_display_label_param_skipped_when_query_present() -> None:
+    """A tool that already declares a `query` param is left untouched: no `message` is injected."""
+
+    class QueryTool(BaseMockTool):
+        def apply(self, query: str) -> str:
+            """Search for something.
+
+            :param query: The search query
+            :return: Search results
+            """
+            return f"searched {query}"
+
+        def apply_ex(self, *args, **kwargs) -> str:
+            return self.apply(**kwargs)
+
+    tool = QueryTool()
+    mcp_tool = make_tool(tool)
+
+    assert "message" not in mcp_tool.parameters["properties"]
+    assert list(mcp_tool.parameters["properties"].keys()) == ["query"]
+
+
+def test_display_label_param_stripped_before_calling_apply() -> None:
+    """Calling the MCP tool with a `message` arg does not error and `message` never reaches the
+    underlying tool's apply()."""
+    received_kwargs: dict = {}
+
+    class RecordingTool(BaseMockTool):
+        def apply(self, name: str) -> str:
+            """Greet.
+
+            :param name: The person's name
+            :return: A greeting
+            """
+            received_kwargs["name"] = name
+            return f"Hello {name}!"
+
+        def apply_ex(self, log_call: bool = True, catch_exceptions: bool = True, **kwargs) -> str:
+            # Would raise TypeError if an unexpected `message` kwarg were passed through.
+            return self.apply(**kwargs)
+
+    tool = RecordingTool()
+    mcp_tool = make_tool(tool)
+
+    assert "message" in mcp_tool.parameters["properties"]
+
+    result = mcp_tool.fn(name="Alice", message="greet Alice")
+
+    assert result == "Hello Alice!"
+    assert received_kwargs == {"name": "Alice"}
