@@ -27,15 +27,34 @@ log = logging.getLogger(__name__)
 INITIAL_INTELEPHENSE_VERSION = "1.14.4"
 DEFAULT_INTELEPHENSE_VERSION = "1.14.4"
 
+# intelephense's built-in default for the `intelephense.files.exclude` setting (DEFAULT_EXCLUDE in the 1.14.4 bundle);
+# a configured exclude list replaces the default, so it is always included.
+DEFAULT_INTELEPHENSE_EXCLUDE = [
+    "**/.git/**",
+    "**/.svn/**",
+    "**/.hg/**",
+    "**/CVS/**",
+    "**/.DS_Store/**",
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**/{Tests,tests}/**",
+    "**/.history/**",
+    "**/vendor/**/vendor/**",
+]
+
 
 class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
     """
     Provides PHP specific instantiation of the LanguageServer class using Intelephense.
 
     You can pass the following entries in ls_specific_settings["php"]:
-        - maxMemory: sets intelephense.maxMemory
+        - maxMemory: the heap limit of the intelephense node process in MB (node's --max-old-space-size)
         - maxFileSize: sets intelephense.files.maxSize
         - ignore_vendor: whether or ignore directories named "vendor" (default: true)
+
+    Intelephense discovers and indexes the files of all workspace folders itself. To make it honour the project's
+    ignore rules (.gitignore files, ignored_paths, always-ignored directories), the ignored directories of every
+    workspace folder are passed as `intelephense.files.exclude` globs via `workspace/configuration`.
     """
 
     @override
@@ -92,7 +111,14 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
             return intelephense_executable_path
 
         def _create_launch_command(self, core_path: str) -> list[str]:
-            return [core_path, "--stdio"]
+            max_memory = self._custom_settings.get("maxMemory")
+            if max_memory is None:
+                return [core_path, "--stdio"]
+            # maxMemory is not an intelephense server setting (the VS Code client applies it as a node option),
+            # so the server script is run by node directly with the heap limit
+            node_path = shutil.which("node")
+            assert node_path is not None, "node is not installed or isn't in PATH. Please install NodeJS and try again."
+            return [node_path, f"--max-old-space-size={int(max_memory)}", os.path.realpath(core_path), "--stdio"]
 
     def __init__(self, config: LanguageServerConfig, repository_root_path: str, solidlsp_settings: SolidLSPSettings):
         super().__init__(config, repository_root_path, None, "php", solidlsp_settings)
@@ -130,6 +156,7 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
                 },
                 "workspace": {
                     "workspaceFolders": True,
+                    "configuration": True,
                     "didChangeConfiguration": {"dynamicRegistration": True},
                     "symbol": {"dynamicRegistration": True},
                 },
@@ -141,15 +168,38 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
         if license_key:
             initialization_options["licenceKey"] = license_key
 
-        max_memory = self._custom_settings.get("maxMemory")
-        max_file_size = self._custom_settings.get("maxFileSize")
-        if max_memory is not None:
-            initialization_options["intelephense.maxMemory"] = max_memory
-        if max_file_size is not None:
-            initialization_options["intelephense.files.maxSize"] = max_file_size
-
         initialize_params["initializationOptions"] = initialization_options
         return initialize_params
+
+    def _collect_ignored_dir_globs(self) -> list[str]:
+        """
+        Walks all workspace folders (not descending into ignored directories) and returns, for each ignored directory,
+        a glob relative to its workspace folder (the form in which intelephense matches `files.exclude` globs).
+        """
+        globs: list[str] = []
+        for folder in self._abs_workspace_folders_all:
+            for dirpath, dirnames, _ in os.walk(folder):
+                kept_dirnames = []
+                for dirname in dirnames:
+                    abs_dir = os.path.join(dirpath, dirname)
+                    rel_to_root = os.path.relpath(abs_dir, self.repository_root_path)
+                    if self.is_ignored_path(rel_to_root, ignore_unsupported_files=False):
+                        rel_to_folder = os.path.relpath(abs_dir, folder).replace(os.path.sep, "/")
+                        globs.append(f"{rel_to_folder}/**")
+                    else:
+                        kept_dirnames.append(dirname)
+                dirnames[:] = kept_dirnames
+        return globs
+
+    def _create_workspace_configuration(self) -> dict:
+        """
+        :return: the `intelephense` configuration section returned in response to `workspace/configuration` requests
+        """
+        files_config: dict = {"exclude": DEFAULT_INTELEPHENSE_EXCLUDE + self._collect_ignored_dir_globs()}
+        max_file_size = self._custom_settings.get("maxFileSize")
+        if max_file_size is not None:
+            files_config["maxSize"] = max_file_size
+        return {"files": files_config}
 
     def _start_server(self) -> None:
         """Start Intelephense server process"""
@@ -163,7 +213,14 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
         def do_nothing(params: dict) -> None:
             return
 
+        workspace_configuration = self._create_workspace_configuration()
+        log.info(f"Intelephense files.exclude: {workspace_configuration['files']['exclude']}")
+
+        def workspace_configuration_handler(params: dict) -> list[dict]:
+            return [workspace_configuration for _ in params["items"]]
+
         self.server.on_request("client/registerCapability", register_capability_handler)
+        self.server.on_request("workspace/configuration", workspace_configuration_handler)
         self.server.on_notification("window/logMessage", window_log_message)
         self.server.on_notification("$/progress", do_nothing)
         self.server.on_notification("textDocument/publishDiagnostics", do_nothing)
