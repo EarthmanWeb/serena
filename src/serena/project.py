@@ -555,7 +555,7 @@ class Project(ToStringMixin):
 
     def create_language_server_manager(self) -> LanguageServerManager:
         """
-        Creates the language server manager for the project, starting one language server per configured programming language.
+        Creates the language server manager for the project. Language servers are started lazily, i.e. when first needed.
 
         :return: the language server manager, which is also stored in the project instance
         """
@@ -601,7 +601,7 @@ class Project(ToStringMixin):
                 trace_lsp_communication=self.serena_config.trace_lsp_communication,
                 ignore_all_dot_files=self.project_config.ignore_all_dot_files,
             )
-            self.language_server_manager = LanguageServerManager.from_languages(self.project_config.languages, factory)
+            self.language_server_manager = LanguageServerManager(self.project_config.languages, factory)
             return self.language_server_manager
         except Exception as e:
             self._language_server_manager_init_error = e
@@ -622,8 +622,8 @@ class Project(ToStringMixin):
 
     def add_language(self, language: Language) -> None:
         """
-        Adds a new programming language to the project configuration, starting the corresponding
-        language server instance if the LS manager is active.
+        Adds a new programming language to the project configuration, registering it with the LS manager
+        (if active); the corresponding language server is started on first use.
         The project configuration is saved to disk after adding the language.
 
         :param language: the programming language to add
@@ -632,12 +632,12 @@ class Project(ToStringMixin):
             log.info(f"Language {language.value} is already present in the project configuration.")
             return
 
-        # start the language server (if the LS manager is active)
+        # register the language with the LS manager (if active)
         if self.language_server_manager is None:
             log.info("Language server manager is not active; skipping language server startup for the new language.")
         else:
-            log.info("Adding and starting the language server for new language %s ...", language.value)
-            self.language_server_manager.add_language_server(language)
+            log.info("Adding new language %s (its language server is started on first use) ...", language.value)
+            self.language_server_manager.add_language(language)
 
         # update the project configuration
         self.project_config.languages.append(language)
@@ -663,7 +663,7 @@ class Project(ToStringMixin):
             log.info("Language server manager is not active; skipping language server shutdown for the removed language.")
         else:
             log.info("Removing and stopping the language server for language %s ...", language.value)
-            self.language_server_manager.remove_language_server(language)
+            self.language_server_manager.remove_language(language)
 
     def shutdown(self, timeout: float = 2.0) -> None:
         if self.language_server_manager is not None:
