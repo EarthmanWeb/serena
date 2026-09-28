@@ -94,6 +94,7 @@ class Project(ToStringMixin):
                     for spec in gitignore_parser.get_ignore_specs():
                         log.debug(f"Adding {len(spec.patterns)} patterns from {spec.file_path} to the ignored paths.")
                         ignored_patterns.extend(spec.patterns)
+                    ignored_patterns.extend(self._gather_additional_workspace_folder_gitignore_patterns())
                 self.__ignored_patterns = ignored_patterns
 
                 # Set up the pathspec matcher for the ignored paths
@@ -109,6 +110,43 @@ class Project(ToStringMixin):
                 log.error(f"Error while gathering ignore spec for project {self.project_config.project_name}: {e}", exc_info=e)
 
         self._ignore_spec_available.set()
+
+    def _gather_additional_workspace_folder_gitignore_patterns(self) -> list[str]:
+        """
+        Collects the .gitignore patterns of all additional workspace folders that lie outside the project root,
+        re-rooted to the project root (i.e. anchored below the folder's project-root-relative path, e.g. ``../plugin_repo``),
+        such that paths into sibling repositories are subject to their own ignore rules.
+        """
+        patterns: list[str] = []
+        for folder in self.abs_additional_workspace_folders:
+            rel_folder = os.path.relpath(folder, self.project_root).replace(os.path.sep, "/")
+            if not rel_folder.startswith(".."):
+                continue  # inside the project root: already covered by the project's own .gitignore files
+            for spec in GitignoreParser(folder).get_ignore_specs():
+                log.debug(f"Adding {len(spec.patterns)} patterns from {spec.file_path} (workspace folder {rel_folder}) to the ignored paths.")
+                patterns.extend(self._reroot_gitignore_pattern(pattern, rel_folder) for pattern in spec.patterns)
+        return patterns
+
+    @staticmethod
+    def _reroot_gitignore_pattern(pattern: str, rel_folder: str) -> str:
+        """
+        :param pattern: a pattern as produced by :class:`GitignoreParser` (relative to the folder it was parsed for)
+        :param rel_folder: the folder's path relative to the project root
+        :return: the equivalent pattern relative to the project root
+        """
+        negation = pattern.startswith("!")
+        if negation:
+            pattern = pattern[1:]
+        if pattern.startswith("/"):
+            # anchored at the folder root
+            rerooted = f"/{rel_folder}{pattern}"
+        elif "/" in pattern.rstrip("/"):
+            # already scoped to a subdirectory of the folder (nested .gitignore)
+            rerooted = f"/{rel_folder}/{pattern}"
+        else:
+            # un-anchored name pattern: matches anywhere below the folder
+            rerooted = f"/{rel_folder}/**/{pattern}"
+        return ("!" if negation else "") + rerooted
 
     def _tostring_includes(self) -> list[str]:
         return []
