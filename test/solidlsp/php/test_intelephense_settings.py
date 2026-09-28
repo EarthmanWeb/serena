@@ -100,3 +100,19 @@ def test_max_memory_sets_node_heap_limit(tmp_path: Path) -> None:
 
     without_limit = Intelephense.DependencyProvider(SolidLSPSettings.CustomLSSettings({}), str(tmp_path))
     assert without_limit._create_launch_command(core_path) == [core_path, "--stdio"]
+
+
+def test_state_storage_is_project_local_and_cleared_when_excludes_change(tmp_path: Path, repos: tuple[Path, Path]) -> None:
+    """
+    Evidence: intelephense's default state storage ($TMPDIR/intelephense/<hash of folder URIs>) held a 196 MB state
+    built without excludes; reading it during `initialize` exceeded a 1024 MB heap (OOM) before any configuration
+    could apply. The state therefore lives in the project's cache dir and is cleared whenever the excludes change.
+    """
+    root, _ = repos
+    ls = _create_ls(tmp_path, root, {}, ignored_paths=[], additional=[])
+    first = ls._prepare_state_storage({"files": {"exclude": ["a/**"]}})
+    assert first["storagePath"] == str(tmp_path / "data" / "cache" / "php" / "intelephense")
+    assert first["clearCache"] is False
+    assert ls._prepare_state_storage({"files": {"exclude": ["a/**"]}})["clearCache"] is False
+    assert ls._prepare_state_storage({"files": {"exclude": ["a/**", "b/**"]}})["clearCache"] is True
+    assert ls._prepare_state_storage({"files": {"exclude": ["a/**", "b/**"]}})["clearCache"] is False

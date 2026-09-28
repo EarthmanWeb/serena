@@ -3082,6 +3082,37 @@ class SolidLanguageServer(ABC):
         self._save_raw_document_symbols_cache()
         self._save_document_symbols_cache()
 
+    def _is_cacheable_path(self, relative_path: str) -> bool:
+        """
+        :param relative_path: a symbol cache key (path relative to the repository root)
+        :return: whether the file exists, lies within one of the workspace folders and is not ignored
+        """
+        abs_path = os.path.normpath(os.path.join(self.repository_root_path, relative_path))
+        if not os.path.isfile(abs_path):
+            return False
+        roots = [self.repository_root_path, *self._abs_workspace_folders_all]
+        candidates = {abs_path, os.path.realpath(abs_path)}
+        in_workspace = any(
+            os.path.commonpath([os.path.normpath(root), candidate]) == os.path.normpath(root) for root in roots for candidate in candidates
+        )
+        return in_workspace and not self.is_ignored_path(relative_path)
+
+    def _prune_symbol_caches(self) -> None:
+        """
+        Removes the symbol cache entries of files that do not exist, lie outside the workspace folders or are ignored,
+        such that the caches (which are fully held in memory) do not grow unboundedly.
+        """
+        for cache, modified_flag_attr in (
+            (self._raw_document_symbols_cache, "_raw_document_symbols_cache_is_modified"),
+            (self._document_symbols_cache, "_document_symbols_cache_is_modified"),
+        ):
+            stale_keys = [key for key in cache if not self._is_cacheable_path(key)]
+            for key in stale_keys:
+                del cache[key]
+            if stale_keys:
+                setattr(self, modified_flag_attr, True)
+                log.info("Pruned %d stale entries from %s (%d remaining)", len(stale_keys), modified_flag_attr.removesuffix("_is_modified"), len(cache))
+
     def request_workspace_symbol(self, query: str) -> list[ls_types.UnifiedSymbolInformation] | None:
         """
         Raise a [workspace/symbol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workspace_symbol) request to the Language Server
@@ -3161,6 +3192,7 @@ class SolidLanguageServer(ABC):
         :return: self for method chaining
         """
         log.info(f"Starting language server with language {self.language_server.language} for {self.language_server.repository_root_path}")
+        self._prune_symbol_caches()
         self.server_started = True
         self._start_server()
         return self

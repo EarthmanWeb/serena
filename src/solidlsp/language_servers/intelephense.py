@@ -2,6 +2,7 @@
 Provides PHP specific instantiation of the LanguageServer class using Intelephense.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -201,6 +202,30 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
             files_config["maxSize"] = max_file_size
         return {"files": files_config}
 
+    def _prepare_state_storage(self, workspace_configuration: dict) -> dict:
+        """
+        Prepares intelephense's workspace state storage in the project's cache directory (instead of the shared default
+        location in the system's temp dir) and determines whether the stored state must be cleared, because it was
+        built with a different configuration (in particular different excludes): intelephense reads the full stored
+        state during `initialize`, before any configuration applies, so a stale state can exceed the heap limit.
+
+        :param workspace_configuration: the configuration that will be served via `workspace/configuration`
+        :return: the initialization options `storagePath` and `clearCache`
+        """
+        storage_path = os.path.join(self.cache_dir, "intelephense")
+        os.makedirs(storage_path, exist_ok=True)
+        configuration_file = os.path.join(storage_path, "workspace_configuration.json")
+        configuration_json = json.dumps(workspace_configuration, sort_keys=True)
+        clear_cache = False
+        if os.path.exists(configuration_file):
+            with open(configuration_file, encoding="utf-8") as f:
+                clear_cache = f.read() != configuration_json
+        with open(configuration_file, "w", encoding="utf-8") as f:
+            f.write(configuration_json)
+        if clear_cache:
+            log.info("Intelephense workspace configuration changed; the stored workspace state will be cleared")
+        return {"storagePath": storage_path, "clearCache": clear_cache}
+
     def _start_server(self) -> None:
         """Start Intelephense server process"""
 
@@ -228,6 +253,7 @@ class Intelephense(PhpModifierRangeMixin, SolidLanguageServer):
         log.info("Starting Intelephense server process")
         self.server.start()
         initialize_params = self._create_initialize_params()
+        initialize_params["initializationOptions"].update(self._prepare_state_storage(workspace_configuration))  # type: ignore[typeddict-item]
 
         log.info("Sending initialize request from LSP client to LSP server and awaiting response")
         init_response = self.server.send.initialize(initialize_params)
