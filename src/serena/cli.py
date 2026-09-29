@@ -314,8 +314,11 @@ class TopLevelCommands(AutoRegisteringGroup):
         default=None,
         help="Comma-separated list of memory directory paths (absolute or relative to project root). "
         "The first path is the primary write location; subsequent paths are additional sources. "
-        "Append ':ro' to any extra path to make it read-only (e.g. '/shared/memories:ro'). "
-        "Writes to existing memories update them in-place; new memories go to the primary. "
+        "Each extra path may be prefixed with 'alias=' (e.g. 'em=../em-serena/.serena/memory') to register it "
+        "under that alias instead of flat-merging it with the primary dir; memories in an aliased directory are "
+        "addressed ONLY as '<alias>/<name>' (e.g. 'em/feature/FOO'). "
+        "Append ':ro' to any extra path (aliased or not) to make it read-only (e.g. 'shared=/shared/memories:ro'). "
+        "Writes to existing memories update them in-place; new (unaliased) memories go to the primary. "
         "Defaults to '<project_root>/.serena/memories'.",
     )
     @click.option(

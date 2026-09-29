@@ -5,6 +5,7 @@ and :meth:`_prepare_name`).
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -869,7 +870,9 @@ class TestCleanMemoryHeader:
     def test_leading_h1_demoted_to_bold(self) -> None:
         from serena.tools.memory_tools import _clean_memory_header
 
-        assert _clean_memory_header("# INDEX_FEATURES - Feature Registry\n\nbody").splitlines()[0] == "**INDEX_FEATURES - Feature Registry**"
+        assert (
+            _clean_memory_header("# INDEX_FEATURES - Feature Registry\n\nbody").splitlines()[0] == "**INDEX_FEATURES - Feature Registry**"
+        )
 
     def test_front_matter_collapsed_to_name(self) -> None:
         from serena.tools.memory_tools import _clean_memory_header
@@ -1020,9 +1023,7 @@ class TestSearchMemoriesByFrontMatterRelevance:
 class TestSearchMemoriesByNameRelevance:
     def test_multi_term_query_matches_by_or_terms(self, fs_manager: MemoryManager) -> None:
         _write(fs_manager, "ref/REF_LOCAL_ADMIN_CREDENTIALS", "# creds")
-        result = fs_manager.search_memories_by_name(
-            "local admin password preset credentials login demo", fuzzy=False
-        ).to_dict()
+        result = fs_manager.search_memories_by_name("local admin password preset credentials login demo", fuzzy=False).to_dict()
         assert "ref/REF_LOCAL_ADMIN_CREDENTIALS" in result.get("memories", [])
 
     def test_underscore_query_tokenized(self, fs_manager: MemoryManager) -> None:
@@ -1095,3 +1096,231 @@ class TestSearchFallbacks:
         _write(fs_manager, "ref/X", _FM_NEW + _FM_BODY)
         assert search_by_name_with_fallback(fs_manager, "zzz_nothing_qqq", fuzzy=False) == {}
         assert search_by_front_matter_with_fallback(fs_manager, "zzz_nothing_qqq") == []
+
+
+class TestMemoryPathAliasParsing:
+    def test_parses_alias_and_path(self, manager: MemoryManager) -> None:
+        alias, path, readonly = manager._parse_path_entry("em=../em-serena/.serena/memory")
+        assert (alias, path, readonly) == ("em", "../em-serena/.serena/memory", False)
+
+    def test_parses_alias_with_ro(self, manager: MemoryManager) -> None:
+        alias, path, readonly = manager._parse_path_entry("shared=/abs/dir:ro")
+        assert (alias, path, readonly) == ("shared", "/abs/dir", True)
+
+    def test_plain_path_unaliased(self, manager: MemoryManager) -> None:
+        alias, path, readonly = manager._parse_path_entry("../dir")
+        assert (alias, path, readonly) == (None, "../dir", False)
+
+    def test_plain_path_with_ro(self, manager: MemoryManager) -> None:
+        alias, path, readonly = manager._parse_path_entry("../dir:ro")
+        assert (alias, path, readonly) == (None, "../dir", True)
+
+    def test_invalid_alias_chars_treated_as_unaliased(self, manager: MemoryManager) -> None:
+        # "C" in "C:\foo" is not followed by "=", so this never even reaches alias parsing,
+        # but an "=" with an invalid alias-looking prefix must also fall back to unaliased.
+        alias, path, readonly = manager._parse_path_entry("not valid alias=../dir")
+        assert alias is None
+        assert path == "not valid alias=../dir"
+        assert readonly is False
+
+
+class TestMemoryPathAliasSplitAlias:
+    def test_split_alias_with_registered_alias(self, manager: MemoryManager) -> None:
+        manager._memory_aliases = {"em": Path("/tmp/em")}
+        assert manager.split_alias("em/feature/FOO") == ("em", "feature/FOO")
+
+    def test_split_alias_bare_alias_no_remainder(self, manager: MemoryManager) -> None:
+        manager._memory_aliases = {"em": Path("/tmp/em")}
+        assert manager.split_alias("em") == (None, "em")
+
+    def test_split_alias_unregistered_prefix(self, manager: MemoryManager) -> None:
+        manager._memory_aliases = {"em": Path("/tmp/em")}
+        assert manager.split_alias("other/feature/FOO") == (None, "other/feature/FOO")
+
+    def test_split_alias_sanitizes_name(self, manager: MemoryManager) -> None:
+        manager._memory_aliases = {"em": Path("/tmp/em")}
+        assert manager.split_alias("mem:em/feature/FOO.md") == ("em", "feature/FOO")
+
+
+@pytest.fixture
+def aliased_manager(tmp_path) -> tuple[MemoryManager, Path, Path]:
+    """A MemoryManager with a primary dir and one aliased extra dir ('em'), each already
+    containing a same-named memory (`feature/X`) so collision behavior can be exercised.
+    """
+    primary_root = tmp_path / "primary" / ".serena"
+    extra_dir = tmp_path / "em-serena" / ".serena" / "memory"
+    extra_dir.mkdir(parents=True)
+    manager = MemoryManager(serena_data_folder=primary_root)
+    manager.set_memory_paths([str(primary_root / "memories"), f"em={extra_dir}"])
+    (manager._project_memory_dir / "feature").mkdir(parents=True, exist_ok=True)
+    (manager._project_memory_dir / "feature" / "X.md").write_text("primary content", encoding="utf-8")
+    (extra_dir / "feature").mkdir(parents=True, exist_ok=True)
+    (extra_dir / "feature" / "X.md").write_text("aliased content", encoding="utf-8")
+    return manager, primary_root, extra_dir
+
+
+class TestAliasedMemoryCollisionResolution:
+    def test_same_named_memory_both_readable_with_correct_contents(self, aliased_manager) -> None:
+        manager, _primary_root, _extra_dir = aliased_manager
+        assert manager.load_memory("feature/X") == "primary content"
+        assert manager.load_memory("em/feature/X") == "aliased content"
+
+    def test_list_memories_no_topic_includes_alias_prefixed_name(self, aliased_manager) -> None:
+        manager, _primary_root, _extra_dir = aliased_manager
+        names = manager.list_memories().get_full_list()
+        assert "feature/X" in names
+        assert "em/feature/X" in names
+
+    def test_list_memories_alias_topic_lists_only_that_dir(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        (extra_dir / "other").mkdir()
+        (extra_dir / "other" / "Y.md").write_text("y", encoding="utf-8")
+        names = manager.list_memories(topic="em").get_full_list()
+        assert set(names) == {"em/feature/X", "em/other/Y"}
+
+    def test_list_memories_alias_subtopic(self, aliased_manager) -> None:
+        manager, _primary_root, _extra_dir = aliased_manager
+        names = manager.list_memories(topic="em/feature").get_full_list()
+        assert names == ["em/feature/X"]
+
+    def test_list_memories_other_topic_excludes_aliased_names(self, aliased_manager) -> None:
+        manager, _primary_root, _extra_dir = aliased_manager
+        names = manager.list_memories(topic="feature").get_full_list()
+        assert names == ["feature/X"]
+
+    def test_write_new_aliased_memory_lands_in_aliased_dir(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        manager.save_memory("em/feature/NEW", "new content", is_tool_context=False)
+        assert (extra_dir / "feature" / "NEW.md").read_text(encoding="utf-8") == "new content"
+        assert not (manager._project_memory_dir / "feature" / "NEW.md").exists()
+
+    def test_write_to_readonly_aliased_dir_refused(self, tmp_path) -> None:
+        primary_root = tmp_path / "primary" / ".serena"
+        extra_dir = tmp_path / "shared"
+        extra_dir.mkdir(parents=True)
+        manager = MemoryManager(serena_data_folder=primary_root)
+        manager.set_memory_paths([str(primary_root / "memories"), f"ro={extra_dir}:ro"])
+        result = manager.save_memory("ro/foo", "content", is_tool_context=False)
+        assert "read-only" in result
+        assert not (extra_dir / "foo.md").exists()
+
+    def test_readonly_aliased_dir_listed_as_read_only(self, tmp_path) -> None:
+        primary_root = tmp_path / "primary" / ".serena"
+        extra_dir = tmp_path / "shared"
+        extra_dir.mkdir(parents=True)
+        (extra_dir / "foo.md").write_text("content")
+        manager = MemoryManager(serena_data_folder=primary_root)
+        manager.set_memory_paths([str(primary_root / "memories"), f"ro={extra_dir}:ro"])
+        listed = manager.list_memories()
+        assert "ro/foo" in listed.read_only_memories
+        assert "ro/foo" not in listed.memories
+
+    def test_delete_aliased_memory(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        result = manager.delete_memory("em/feature/X", is_tool_context=False)
+        assert "deleted" in result
+        assert not (extra_dir / "feature" / "X.md").exists()
+        # primary copy untouched
+        assert manager.load_memory("feature/X") == "primary content"
+
+    def test_move_aliased_memory_to_aliased_name(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        manager.move_memory("em/feature/X", "em/feature/Renamed", is_tool_context=False)
+        assert manager.load_memory("em/feature/Renamed") == "aliased content"
+        assert not (extra_dir / "feature" / "X.md").exists()
+
+    def test_move_aliased_memory_to_unaliased_name(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        manager.move_memory("em/feature/X", "moved_out", is_tool_context=False)
+        assert manager.load_memory("moved_out") == "aliased content"
+        assert not (extra_dir / "feature" / "X.md").exists()
+
+    def test_search_by_name_returns_alias_prefixed_names(self, aliased_manager) -> None:
+        manager, _primary_root, _extra_dir = aliased_manager
+        results = manager.search_memories_by_name("X").get_full_list()
+        assert "em/feature/X" in results
+        assert "feature/X" in results
+
+    def test_search_by_front_matter_returns_alias_prefixed_names(self, aliased_manager) -> None:
+        manager, _primary_root, extra_dir = aliased_manager
+        content = "---\nname: aliased\ndescription: unique_marker_keyword here\n---\n\nbody"
+        (extra_dir / "feature" / "X.md").write_text(content, encoding="utf-8")
+        hits = manager.search_memories_by_front_matter("unique_marker_keyword")
+        assert any(h["memory"] == "em/feature/X" for h in hits)
+
+
+class TestMemoryPathAliasValidation:
+    def test_alias_on_primary_raises(self, tmp_path) -> None:
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        with pytest.raises(ValueError, match="primary"):
+            manager.set_memory_paths([f"primary={tmp_path / 'memories'}"])
+
+    def test_bad_alias_characters_treated_as_unaliased_path(self, manager: MemoryManager) -> None:
+        # "bad alias" (contains a space) does not match the alias regex, so the whole entry
+        # is parsed as a plain, unaliased path rather than raising.
+        alias, path, _readonly = manager._parse_path_entry("bad alias=/some/dir")
+        assert alias is None
+        assert path == "bad alias=/some/dir"
+
+    def test_alias_equal_to_global_raises(self, tmp_path) -> None:
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        extra = tmp_path / "extra"
+        extra.mkdir()
+        with pytest.raises(ValueError, match="global"):
+            manager.set_memory_paths([str(tmp_path / "memories"), f"global={extra}"])
+
+    def test_duplicate_alias_raises(self, tmp_path) -> None:
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        extra1 = tmp_path / "extra1"
+        extra2 = tmp_path / "extra2"
+        extra1.mkdir()
+        extra2.mkdir()
+        with pytest.raises(ValueError, match="Duplicate"):
+            manager.set_memory_paths([str(tmp_path / "memories"), f"em={extra1}", f"em={extra2}"])
+
+    def test_alias_clashing_with_primary_top_level_dir_raises(self, tmp_path) -> None:
+        primary = tmp_path / "memories"
+        (primary / "feature").mkdir(parents=True)
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        extra = tmp_path / "extra"
+        extra.mkdir()
+        with pytest.raises(ValueError, match="feature"):
+            manager.set_memory_paths([str(primary), f"feature={extra}"])
+
+    def test_nonexistent_aliased_dir_logs_warning_and_is_skipped(self, tmp_path, caplog) -> None:
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        with caplog.at_level("WARNING"):
+            manager.set_memory_paths([str(tmp_path / "memories"), f"em={tmp_path / 'nope'}"])
+        assert "em" not in manager._memory_aliases
+        assert any("not found" in r.message for r in caplog.records)
+
+
+class TestUnaliasedExtraShadowWarning:
+    def test_shadowed_name_logs_warning_but_primary_wins(self, tmp_path, caplog) -> None:
+        primary = tmp_path / "memories"
+        extra = tmp_path / "extra"
+        (primary / "feature").mkdir(parents=True)
+        (extra / "feature").mkdir(parents=True)
+        (primary / "feature" / "X.md").write_text("primary", encoding="utf-8")
+        (extra / "feature" / "X.md").write_text("extra", encoding="utf-8")
+
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        with caplog.at_level("WARNING"):
+            manager.set_memory_paths([str(primary), str(extra)])
+
+        assert manager.load_memory("feature/X") == "primary"
+        assert any("feature/X" in r.message for r in caplog.records)
+
+    def test_flat_merge_still_works_for_non_colliding_names(self, tmp_path) -> None:
+        primary = tmp_path / "memories"
+        extra = tmp_path / "extra"
+        primary.mkdir(parents=True)
+        extra.mkdir(parents=True)
+        (extra / "only_in_extra.md").write_text("extra only", encoding="utf-8")
+
+        manager = MemoryManager(serena_data_folder=tmp_path / ".serena")
+        manager.set_memory_paths([str(primary), str(extra)])
+
+        assert manager.load_memory("only_in_extra") == "extra only"
+        names = manager.list_memories().get_full_list()
+        assert "only_in_extra" in names

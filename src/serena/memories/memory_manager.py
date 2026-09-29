@@ -29,6 +29,7 @@ class MemoryManager:
     GLOBAL_TOPIC = "global"
     _global_memory_dir = SerenaPaths().global_memories_path
     _MEMORY_REF_PREFIX = MEMORY_REF_PREFIX
+    _ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
     def __init__(
         self,
@@ -56,6 +57,7 @@ class MemoryManager:
         # Fork enhancements: multi-directory memory paths with read-only support
         self._extra_memory_dirs: list[Path] = []
         self._readonly_dirs: set[Path] = set()
+        self._memory_aliases: dict[str, Path] = {}
 
     def _resolve_path(self, raw: str) -> Path:
         """Resolve a (possibly relative) extra-memory path against the project root."""
@@ -70,16 +72,38 @@ class MemoryManager:
         """Return True if path lives inside a read-only extra directory."""
         return any(path.is_relative_to(d) for d in self._readonly_dirs)
 
+    def split_alias(self, name: str) -> tuple[str | None, str]:
+        """Split a (sanitized) memory name into ``(alias, remainder)`` if its leading path
+        segment is a registered alias, else ``(None, name)``.
+
+        An alias with no remainder (bare ``"em"``) is not split: an aliased directory has no
+        single memory representing it, so it is treated as an ordinary (unresolvable) name.
+        """
+        name = self._sanitize_name(name)
+        parts = name.split("/", 1)
+        if len(parts) == 2 and parts[0] in self._memory_aliases:
+            return parts[0], parts[1]
+        return None, name
+
     def _find_existing_memory(self, name: str) -> Path | None:
         """Search the primary dir then extra dirs for an existing memory file.
 
         Returns the first existing match so reads/writes/deletes operate on it in-place
         (extra dirs let a project pull in shared memories, e.g. from a monorepo sibling).
         Global memories are resolved by the caller against the global dir, not here.
+        An aliased name (``<alias>/<rel>``) is looked up ONLY in its aliased directory.
         """
         name = self._sanitize_name(name)
         if self._is_global(name):
             return None
+        alias, rest = self.split_alias(name)
+        if alias is not None:
+            parts = rest.split("/")
+            filename = f"{parts[-1]}.md"
+            subdir = "/".join(parts[:-1])
+            base = self._memory_aliases[alias]
+            candidate = base / subdir / filename if subdir else base / filename
+            return candidate if candidate.exists() else None
         parts = name.split("/")
         filename = f"{parts[-1]}.md"
         subdir = "/".join(parts[:-1])
@@ -93,31 +117,107 @@ class MemoryManager:
                 return candidate
         return None
 
+    def _parse_path_entry(self, raw: str) -> tuple[str | None, str, bool]:
+        r"""Parse a ``[alias=]path[:ro]`` entry into ``(alias, path, readonly)``.
+
+        The part before the first ``=`` is treated as an alias only if it matches
+        :attr:`_ALIAS_PATTERN`; otherwise the whole entry is treated as a plain
+        (unaliased) path, e.g. a Windows drive letter like ``C:\\foo`` never has an
+        ``=`` in it, but an entry containing one that doesn't look like an alias name
+        (e.g. ``a=b=path``) is also kept unaliased.
+        """
+        readonly = raw.endswith(":ro")
+        body = raw[:-3] if readonly else raw
+        alias, sep, rest = body.partition("=")
+        if sep and self._ALIAS_PATTERN.fullmatch(alias):
+            return alias, rest, readonly
+        return None, body, readonly
+
     def set_memory_paths(self, paths: list[str]) -> None:
         """Override memory directories.
 
         The first path becomes the primary write location; subsequent paths are
-        additional sources that are also searched. A trailing ``:ro`` marks an extra
-        directory as read-only. Writes to existing memories update them in-place; new
-        memories are created in the primary directory.
+        additional sources that are also searched. Each entry has the form
+        ``[alias=]path[:ro]``:
+
+        * A trailing ``:ro`` marks the directory as read-only.
+        * An ``alias=`` prefix (only valid on extras, ``paths[1:]``) registers the
+          directory under that alias: its memories are addressable ONLY as
+          ``<alias>/<name>`` and never flow into the flat (primary-wins) merge that
+          unaliased extras use.
+
+        Writes to existing memories update them in-place; new memories are created in
+        the primary directory (or, for an aliased name, in that alias's directory).
+
+        :raises ValueError: if the primary entry carries an alias, or an alias is
+            invalid (bad characters, ``"global"``, duplicated, or shadowing the name of
+            an existing top-level subdirectory of the primary dir).
         """
         if not paths:
             return
-        primary = self._resolve_path(paths[0])
+        primary_alias, primary_raw, _primary_ro = self._parse_path_entry(paths[0])
+        if primary_alias is not None:
+            raise ValueError(f"The primary memory path cannot carry an alias. Got: {paths[0]}")
+        primary = self._resolve_path(primary_raw)
         primary.mkdir(parents=True, exist_ok=True)
         self._project_memory_dir = primary
         self._extra_memory_dirs = []
         self._readonly_dirs = set()
+        self._memory_aliases = {}
+
+        primary_subdirs = {p.name for p in primary.iterdir() if p.is_dir()} if primary.exists() else set()
+        seen_aliases: set[str] = set()
         for raw in paths[1:]:
-            readonly = raw.endswith(":ro")
-            extra = self._resolve_path(raw[:-3] if readonly else raw)
-            if extra.exists() and extra.is_dir():
+            alias, path_str, readonly = self._parse_path_entry(raw)
+            extra = self._resolve_path(path_str)
+            if alias is not None:
+                if alias == self.GLOBAL_TOPIC:
+                    raise ValueError(f"Memory path alias cannot be '{self.GLOBAL_TOPIC}' (reserved).")
+                if alias in seen_aliases:
+                    raise ValueError(f"Duplicate memory path alias: '{alias}'.")
+                if alias in primary_subdirs:
+                    raise ValueError(
+                        f"Memory path alias '{alias}' clashes with an existing top-level subdirectory of the primary memory dir."
+                    )
+                seen_aliases.add(alias)
+                if extra.exists() and extra.is_dir():
+                    self._memory_aliases[alias] = extra
+                    if readonly:
+                        self._readonly_dirs.add(extra)
+                else:
+                    log.warning(f"Aliased memory path not found or not a directory: {alias}={extra}")
+            elif extra.exists() and extra.is_dir():
                 self._extra_memory_dirs.append(extra)
                 if readonly:
                     self._readonly_dirs.add(extra)
             else:
                 log.warning(f"Extra memory path not found or not a directory: {extra}")
-        log.info(f"Memory paths set: primary={self._project_memory_dir}, extras={self._extra_memory_dirs}, readonly={self._readonly_dirs}")
+        self._log_shadowed_extra_memories()
+        log.info(
+            f"Memory paths set: primary={self._project_memory_dir}, extras={self._extra_memory_dirs}, "
+            f"aliases={self._memory_aliases}, readonly={self._readonly_dirs}"
+        )
+
+    def _log_shadowed_extra_memories(self) -> None:
+        """Log (once, via ``log.warning``) every memory name that exists in the primary dir
+        AND in an unaliased extra dir; the primary copy wins but the shadowed copy is no
+        longer silently dropped.
+        """
+        if self._project_memory_dir is None:
+            return
+        primary_names: dict[str, Path] = {}
+        if self._project_memory_dir.exists():
+            for md_file in self._iter_memory_files(self._project_memory_dir):
+                rel = str(md_file.relative_to(self._project_memory_dir).with_suffix("")).replace(os.sep, "/")
+                primary_names[rel] = md_file
+        for base in self._extra_memory_dirs:
+            if not base.exists():
+                continue
+            for md_file in self._iter_memory_files(base):
+                rel = str(md_file.relative_to(base).with_suffix("")).replace(os.sep, "/")
+                primary_hit = primary_names.get(rel)
+                if primary_hit is not None:
+                    log.warning(f"Memory '{rel}' exists in both {primary_hit} and {md_file}; the primary copy will be used.")
 
     def _is_read_only_memory(self, name: str) -> bool:
         for pattern in self._read_only_memory_patterns:
@@ -263,6 +363,10 @@ class MemoryManager:
             sub_name = name[len(self.GLOBAL_TOPIC) + 1 :]
             return self._resolve_memory_path(self._global_memory_dir, sub_name.split("/"))
 
+        alias, rest = self.split_alias(name)
+        if alias is not None:
+            return self._resolve_memory_path(self._memory_aliases[alias], rest.split("/"))
+
         # Project-local memory
         assert self._project_memory_dir is not None, "Project dir was not passed at initialization"
         return self._resolve_memory_path(self._project_memory_dir, parts)
@@ -351,7 +455,7 @@ class MemoryManager:
             memory_name = prefix + rel
             if self._is_ignored_memory(memory_name):
                 continue
-            result.add(memory_name, is_read_only=self._is_read_only_memory(memory_name))
+            result.add(memory_name, is_read_only=self._is_read_only_memory(memory_name) or self._is_readonly(md_file))
         return result
 
     def list_global_memories(self, subtopic: str = "") -> MemoriesList:
@@ -394,11 +498,28 @@ class MemoryManager:
                 result.add(rel, is_read_only=is_ro)
         return result
 
+    def _list_aliased_memories(self, alias: str, subtopic: str = "") -> MemoriesList:
+        """List memories under one aliased directory, names prefixed with ``<alias>/``."""
+        base = self._memory_aliases[alias]
+        dir_path = base / subtopic.replace("/", os.sep) if subtopic else base
+        return self._list_memories(dir_path, base, alias + "/")
+
+    def _list_all_aliased_memories(self) -> MemoriesList:
+        result = self.MemoriesList()
+        for alias in self._memory_aliases:
+            result.extend(self._list_aliased_memories(alias))
+        return result
+
     def list_memories(self, topic: str = "") -> MemoriesList:
         """
         Lists all memories, optionally filtered by topic.
-        If the topic is omitted, both global and project-specific memories are returned.
-        Also includes memories from extra memory directories.
+        If the topic is omitted, both global and project-specific memories are returned,
+        plus every aliased memory (as ``<alias>/...``) and unaliased extra-dir memories
+        (flat-merged with the primary dir, primary winning).
+
+        If ``topic`` names a registered alias (``<alias>`` or ``<alias>/<sub>``), only that
+        aliased directory/subtree is listed (alias-prefixed); aliased memories are never
+        included under any other topic.
         """
         memories: MemoryManager.MemoriesList
 
@@ -408,12 +529,18 @@ class MemoryManager:
                 subtopic = "/".join(topic_parts[1:])
                 memories = self.list_global_memories(subtopic=subtopic)
             else:
-                memories = self.list_project_memories(topic=topic)
-                memories.extend(self._list_extra_memories(topic=topic))
+                topic_parts = topic.split("/", 1)
+                if topic_parts[0] in self._memory_aliases:
+                    subtopic = topic_parts[1] if len(topic_parts) > 1 else ""
+                    memories = self._list_aliased_memories(topic_parts[0], subtopic=subtopic)
+                else:
+                    memories = self.list_project_memories(topic=topic)
+                    memories.extend(self._list_extra_memories(topic=topic))
         else:
             memories = self.list_project_memories()
             memories.extend(self.list_global_memories())
             memories.extend(self._list_extra_memories())
+            memories.extend(self._list_all_aliased_memories())
 
         return memories
 
